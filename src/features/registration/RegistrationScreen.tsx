@@ -96,7 +96,7 @@ export function RegistrationScreen({ onComplete }: RegistrationScreenProps) {
             ]}
           >
             <View style={styles.heading}>
-              <Text style={styles.title}>Let's get to know you.</Text>
+              <Text style={styles.title}>{"Let's get to know you."}</Text>
               <Text style={styles.subtitle}>
                 Tell us what to call you as we set up your personalized study
                 space.

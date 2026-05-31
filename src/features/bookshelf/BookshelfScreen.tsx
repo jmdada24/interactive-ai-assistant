@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react';
 import {
+  Alert,
+  GestureResponderEvent,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import {
@@ -14,13 +17,24 @@ import {
   IconSearch,
 } from '../../components/icons/icons';
 import { AppHeader } from '../../components/layout/AppHeader';
+import { Screen } from '../../components/layout/Screen';
+import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Book } from '../../types/Book';
+import { StudentProfile } from '../../types/StudentProfile';
 
 type BookshelfScreenProps = {
   userName: string;
   books: Book[];
   onBookSelect: (book: Book) => void;
-  onAddBook: () => void;
+  onAddBook: (title: string, description: string) => Promise<void>;
+  onArchiveBook: (bookId: string) => Promise<void>;
+  onBooksChanged: () => void;
+  onProfileUpdated: (profile: StudentProfile) => void;
+  onUpdateBook: (
+    bookId: string,
+    title: string,
+    description: string
+  ) => Promise<void>;
 };
 
 function getGreeting() {
@@ -37,24 +51,124 @@ export function BookshelfScreen({
   books,
   onBookSelect,
   onAddBook,
+  onArchiveBook,
+  onBooksChanged,
+  onProfileUpdated,
+  onUpdateBook,
 }: BookshelfScreenProps) {
+  const { width } = useWindowDimensions();
   const [searchQuery, setSearchQuery] = useState('');
+  const [bookSheetOpen, setBookSheetOpen] = useState(false);
+  const [bookTitle, setBookTitle] = useState('');
+  const [bookDescription, setBookDescription] = useState('');
+  const [bookError, setBookError] = useState('');
+  const [activeMenuBookId, setActiveMenuBookId] = useState<string | null>(null);
+  const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [editBookTitle, setEditBookTitle] = useState('');
+  const [editBookDescription, setEditBookDescription] = useState('');
+  const [editBookError, setEditBookError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const isTablet = width >= 700;
+  const containerWidth = Math.min(width, isTablet ? 980 : 448);
+  const horizontalPadding = isTablet ? 64 : 40;
+  const gridGap = isTablet ? 18 : 14;
+  const columnCount = isTablet ? 3 : 2;
+  const cardWidth = Math.floor(
+    (containerWidth - horizontalPadding - gridGap * (columnCount - 1)) /
+      columnCount
+  );
 
   const filteredBooks = useMemo(() => {
-    return books.filter((book) =>
-      book.title.toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    const query = searchQuery.toLowerCase();
+
+    return books.filter((book) => {
+      return (
+        book.title.toLowerCase().includes(query) ||
+        book.description?.toLowerCase().includes(query)
+      );
+    });
   }, [books, searchQuery]);
 
+  const handleBookSubmit = async () => {
+    const nextTitle = bookTitle.trim();
+
+    if (!nextTitle) {
+      setBookError('Please enter the lesson name.');
+      return;
+    }
+
+    setIsSaving(true);
+    await onAddBook(nextTitle, bookDescription.trim());
+    setIsSaving(false);
+    setBookTitle('');
+    setBookDescription('');
+    setBookError('');
+    setBookSheetOpen(false);
+  };
+
+  const openBookMenu = (event: GestureResponderEvent, bookId: string) => {
+    event.stopPropagation();
+    setActiveMenuBookId((currentId) => (currentId === bookId ? null : bookId));
+  };
+
+  const handleEditBookPress = (book: Book) => {
+    setEditingBook(book);
+    setEditBookTitle(book.title);
+    setEditBookDescription(book.description ?? '');
+    setEditBookError('');
+    setActiveMenuBookId(null);
+  };
+
+  const handleEditBookSubmit = async () => {
+    if (!editingBook) return;
+
+    const nextTitle = editBookTitle.trim();
+
+    if (!nextTitle) {
+      setEditBookError('Please enter the lesson name.');
+      return;
+    }
+
+    setIsSaving(true);
+    await onUpdateBook(editingBook.id, nextTitle, editBookDescription.trim());
+    setIsSaving(false);
+    setEditingBook(null);
+    setEditBookTitle('');
+    setEditBookDescription('');
+    setEditBookError('');
+  };
+
+  const handleArchivePress = (book: Book) => {
+    setActiveMenuBookId(null);
+
+    Alert.alert(
+      'Are you sure?',
+      'This book will be stored in the archive and can be restored later.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            onArchiveBook(book.id);
+          },
+        },
+      ]
+    );
+  };
+
   return (
-    <View style={styles.screen}>
-      <AppHeader />
+    <Screen style={styles.screen}>
+      <AppHeader
+        onBooksChanged={onBooksChanged}
+        onProfileUpdated={onProfileUpdated}
+      />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.container}>
+        <View style={[styles.container, isTablet && styles.tabletContainer]}>
           <View style={styles.heading}>
             <Text style={styles.greeting}>
               {getGreeting()}, {userName}
@@ -81,11 +195,15 @@ export function BookshelfScreen({
             </Pressable>
           </View>
 
-          <View style={styles.grid}>
+          <View style={[styles.grid, { gap: gridGap }]}>
             <Pressable
-              onPress={onAddBook}
+              onPress={() => {
+                setBookSheetOpen(true);
+              }}
               style={({ pressed }) => [
                 styles.newBookCard,
+                { width: cardWidth },
+                isTablet && styles.tabletCard,
                 pressed && styles.cardPressed,
               ]}
             >
@@ -96,18 +214,57 @@ export function BookshelfScreen({
               <Text style={styles.newBookText}>New Book</Text>
             </Pressable>
 
+            {filteredBooks.length === 0 && books.length > 0 ? (
+              <View style={[styles.emptySearchCard, { width: cardWidth }]}>
+                <Text style={styles.emptySearchTitle}>No lessons found</Text>
+                <Text style={styles.emptySearchText}>
+                  Try a simpler search word.
+                </Text>
+              </View>
+            ) : null}
+
             {filteredBooks.map((book) => (
               <Pressable
                 key={book.id}
                 onPress={() => onBookSelect(book)}
                 style={({ pressed }) => [
                   styles.bookCard,
+                  { width: cardWidth },
+                  isTablet && styles.tabletCard,
                   pressed && styles.cardPressed,
                 ]}
               >
-                <Pressable style={styles.dotsButton}>
-                  <IconDots color="#C4C5D5" />
+                <Pressable
+                  onPress={(event) => openBookMenu(event, book.id)}
+                  hitSlop={10}
+                  style={styles.dotsButton}
+                >
+                  <IconDots color="#1A1C1C" />
                 </Pressable>
+
+                {activeMenuBookId === book.id ? (
+                  <View style={styles.bookMenu}>
+                    <Pressable
+                      onPress={() => handleEditBookPress(book)}
+                      style={({ pressed }) => [
+                        styles.bookMenuItem,
+                        pressed && styles.cardPressed,
+                      ]}
+                    >
+                      <Text style={styles.bookMenuText}>Edit title</Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => handleArchivePress(book)}
+                      style={({ pressed }) => [
+                        styles.bookMenuItem,
+                        pressed && styles.cardPressed,
+                      ]}
+                    >
+                      <Text style={styles.deleteMenuText}>Delete</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
 
                 <View style={styles.bookIconArea}>
                   <IconBookCard color={book.color} width={133} height={30} />
@@ -121,13 +278,133 @@ export function BookshelfScreen({
                   <Text style={styles.bookMeta} numberOfLines={1}>
                     {book.date} · {book.sources} sources
                   </Text>
+
+                  {book.description ? (
+                    <Text style={styles.bookDescription} numberOfLines={2}>
+                      {book.description}
+                    </Text>
+                  ) : null}
                 </View>
               </Pressable>
             ))}
           </View>
         </View>
       </ScrollView>
-    </View>
+
+      <BottomSheet
+        visible={bookSheetOpen}
+        title="New lesson"
+        snapPoints={['58%', '78%']}
+        onClose={() => {
+          setBookSheetOpen(false);
+          setBookError('');
+        }}
+      >
+        <View style={styles.sheetForm}>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.label}>LESSON NAME</Text>
+            <TextInput
+              value={bookTitle}
+              onChangeText={(text) => {
+                setBookTitle(text);
+                setBookError('');
+              }}
+              placeholder="e.g. Science Grade 7"
+              placeholderTextColor="#747685"
+              style={styles.input}
+              autoCapitalize="sentences"
+            />
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.label}>DESCRIPTION</Text>
+            <TextInput
+              value={bookDescription}
+              onChangeText={setBookDescription}
+              placeholder="Optional short note"
+              placeholderTextColor="#747685"
+              style={[styles.input, styles.descriptionInput]}
+              multiline
+              textAlignVertical="top"
+            />
+          </View>
+
+          {bookError ? <Text style={styles.errorText}>{bookError}</Text> : null}
+
+          <Pressable
+            disabled={isSaving}
+            onPress={handleBookSubmit}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              pressed && styles.cardPressed,
+              isSaving && styles.disabledButton,
+            ]}
+          >
+            <Text style={styles.primaryButtonText}>
+              {isSaving ? 'Saving...' : 'Create lesson'}
+            </Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={Boolean(editingBook)}
+        title="Edit lesson"
+        snapPoints={['58%', '78%']}
+        onClose={() => {
+          setEditingBook(null);
+          setEditBookError('');
+        }}
+      >
+        <View style={styles.sheetForm}>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.label}>LESSON NAME</Text>
+            <TextInput
+              value={editBookTitle}
+              onChangeText={(text) => {
+                setEditBookTitle(text);
+                setEditBookError('');
+              }}
+              placeholder="e.g. Science Grade 7"
+              placeholderTextColor="#747685"
+              style={styles.input}
+              autoCapitalize="sentences"
+            />
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.label}>DESCRIPTION</Text>
+            <TextInput
+              value={editBookDescription}
+              onChangeText={setEditBookDescription}
+              placeholder="Optional short note"
+              placeholderTextColor="#747685"
+              style={[styles.input, styles.descriptionInput]}
+              multiline
+              textAlignVertical="top"
+            />
+          </View>
+
+          {editBookError ? (
+            <Text style={styles.errorText}>{editBookError}</Text>
+          ) : null}
+
+          <Pressable
+            disabled={isSaving}
+            onPress={handleEditBookSubmit}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              pressed && styles.cardPressed,
+              isSaving && styles.disabledButton,
+            ]}
+          >
+            <Text style={styles.primaryButtonText}>
+              {isSaving ? 'Saving...' : 'Save lesson'}
+            </Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
+    </Screen>
   );
 }
 
@@ -145,6 +422,10 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingTop: 24,
     paddingHorizontal: 20,
+  },
+  tabletContainer: {
+    maxWidth: 980,
+    paddingHorizontal: 32,
   },
   heading: {
     marginBottom: 32,
@@ -207,10 +488,9 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
   },
   newBookCard: {
-    width: '48%',
     minHeight: 180,
     borderRadius: 16,
     backgroundColor: '#ffffff',
@@ -218,7 +498,6 @@ const styles = StyleSheet.create({
     borderColor: '#c4c5d5',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
     shadowColor: '#000',
     shadowOpacity: 0.05,
     shadowRadius: 1,
@@ -240,21 +519,47 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '600',
   },
+  emptySearchCard: {
+    minHeight: 180,
+    borderRadius: 16,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#c4c5d5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  emptySearchTitle: {
+    color: '#1a1c1c',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  emptySearchText: {
+    color: '#747685',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '400',
+    textAlign: 'center',
+  },
   bookCard: {
-    width: '48%',
     minHeight: 180,
     borderRadius: 16,
     backgroundColor: '#ffffff',
     borderWidth: 1,
     borderColor: '#c4c5d5',
     padding: 17,
-    marginBottom: 16,
     justifyContent: 'space-between',
     shadowColor: '#000',
     shadowOpacity: 0.05,
     shadowRadius: 1,
     shadowOffset: { width: 0, height: 1 },
     elevation: 1,
+  },
+  tabletCard: {
+    minHeight: 204,
   },
   cardPressed: {
     transform: [{ scale: 0.97 }],
@@ -263,9 +568,45 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 9,
     right: 9,
-    padding: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     borderRadius: 999,
     zIndex: 2,
+  },
+  bookMenu: {
+    position: 'absolute',
+    top: 36,
+    right: 10,
+    width: 132,
+    zIndex: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e1e6',
+    backgroundColor: '#ffffff',
+    padding: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+  },
+  bookMenuItem: {
+    minHeight: 38,
+    justifyContent: 'center',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+  },
+  bookMenuText: {
+    color: '#1a1c1c',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  deleteMenuText: {
+    color: '#E12531',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
   },
   bookIconArea: {
     paddingTop: 16,
@@ -286,5 +627,64 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: '500',
     letterSpacing: 0.6,
+  },
+  bookDescription: {
+    color: '#444653',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '400',
+    marginTop: 6,
+  },
+  sheetForm: {
+    gap: 16,
+  },
+  fieldGroup: {
+    gap: 6,
+  },
+  label: {
+    color: '#444653',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+    letterSpacing: 0.6,
+  },
+  input: {
+    width: '100%',
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: '#c4c5d5',
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: '#1a1c1c',
+    fontSize: 16,
+    fontWeight: '400',
+  },
+  descriptionInput: {
+    minHeight: 88,
+  },
+  errorText: {
+    color: '#E12531',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  primaryButton: {
+    width: '100%',
+    height: 52,
+    borderRadius: 999,
+    backgroundColor: '#002576',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  disabledButton: {
+    opacity: 0.65,
   },
 });

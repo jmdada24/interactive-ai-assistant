@@ -1,21 +1,24 @@
+import * as DocumentPicker from 'expo-document-picker';
 import { useEffect, useRef, useState } from 'react';
 import {
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import {
-    IconChevronRight,
-    IconFlashcard,
-    IconPDF,
-    IconPlus,
-    IconQuiz,
-    IconSend,
+  IconChevronRight,
+  IconFlashcard,
+  IconPDF,
+  IconPlus,
+  IconQuiz,
+  IconSend,
 } from '../../components/icons/icons';
 import { AppHeader } from '../../components/layout/AppHeader';
 import { Screen } from '../../components/layout/Screen';
@@ -34,6 +37,8 @@ type ChatMessage = {
 };
 
 function SourcesTab({ book }: { book: Book }) {
+  const { width } = useWindowDimensions();
+  const isTablet = width >= 700;
   const [sources, setSources] = useState<Source[]>(
     book.sources > 0
       ? Array.from({ length: book.sources }, (_, index) => ({
@@ -43,14 +48,30 @@ function SourcesTab({ book }: { book: Book }) {
       : []
   );
 
-  const handleUpload = () => {
-    setSources((previous) => [
-      ...previous,
-      {
-        id: String(previous.length + 1),
-        name: `Chapter ${previous.length + 1}.pdf`,
-      },
-    ]);
+  const handleUpload = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+        type: 'application/pdf',
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const selectedPdf = result.assets[0];
+
+      setSources((previous) => [
+        ...previous,
+        {
+          id: String(previous.length + 1),
+          name: selectedPdf.name || `Chapter ${previous.length + 1}.pdf`,
+        },
+      ]);
+    } catch {
+      Alert.alert('Upload failed', 'Please try choosing the PDF again.');
+    }
   };
 
   if (sources.length === 0) {
@@ -82,7 +103,10 @@ function SourcesTab({ book }: { book: Book }) {
   return (
     <ScrollView
       style={styles.tabScroll}
-      contentContainerStyle={styles.sourcesContent}
+      contentContainerStyle={[
+        styles.sourcesContent,
+        isTablet && styles.tabletTabContent,
+      ]}
       showsVerticalScrollIndicator={false}
     >
       <Text style={styles.centerTitle}>Resources</Text>
@@ -116,6 +140,8 @@ function SourcesTab({ book }: { book: Book }) {
 }
 
 function ChatTab({ book }: { book: Book }) {
+  const { width } = useWindowDimensions();
+  const isTablet = width >= 700;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -165,12 +191,15 @@ function ChatTab({ book }: { book: Book }) {
       <ScrollView
         ref={scrollRef}
         style={styles.chatScroll}
-        contentContainerStyle={styles.chatContent}
+        contentContainerStyle={[
+          styles.chatContent,
+          isTablet && styles.tabletTabContent,
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {messages.length === 0 && !isTyping ? (
           <View style={styles.chatIntro}>
-            <Text style={styles.chatIntroTitle}>Let's study together...</Text>
+            <Text style={styles.chatIntroTitle}>{"Let's study together..."}</Text>
 
             <Text style={styles.chatIntroText}>
               I only use the lessons your teacher uploaded. Ask me anything,
@@ -235,6 +264,8 @@ function ChatTab({ book }: { book: Book }) {
 }
 
 function ToolsTab({ book }: { book: Book }) {
+  const { width } = useWindowDimensions();
+  const isTablet = width >= 700;
   const [quizActive, setQuizActive] = useState(false);
   const [quizStep, setQuizStep] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
@@ -269,7 +300,10 @@ function ToolsTab({ book }: { book: Book }) {
     return (
       <ScrollView
         style={styles.tabScroll}
-        contentContainerStyle={styles.quizContent}
+        contentContainerStyle={[
+          styles.quizContent,
+          isTablet && styles.tabletTabContent,
+        ]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.quizTopRow}>
@@ -339,7 +373,10 @@ function ToolsTab({ book }: { book: Book }) {
   return (
     <ScrollView
       style={styles.tabScroll}
-      contentContainerStyle={styles.toolsContent}
+      contentContainerStyle={[
+        styles.toolsContent,
+        isTablet && styles.tabletTabContent,
+      ]}
       showsVerticalScrollIndicator={false}
     >
       <View>
@@ -351,7 +388,7 @@ function ToolsTab({ book }: { book: Book }) {
         </Text>
       </View>
 
-      <View style={styles.toolCards}>
+      <View style={[styles.toolCards, isTablet && styles.tabletToolCards]}>
         <Pressable
           onPress={() => {
             setQuizActive(true);
@@ -359,6 +396,7 @@ function ToolsTab({ book }: { book: Book }) {
           }}
           style={({ pressed }) => [
             styles.toolCard,
+            isTablet && styles.tabletToolCard,
             pressed && styles.pressedScale,
           ]}
         >
@@ -383,6 +421,7 @@ function ToolsTab({ book }: { book: Book }) {
         <Pressable
           style={({ pressed }) => [
             styles.toolCard,
+            isTablet && styles.tabletToolCard,
             pressed && styles.pressedScale,
           ]}
         >
@@ -414,21 +453,21 @@ type BookPageProps = {
 };
 
 export function BookPage({ book, onBack }: BookPageProps) {
+  const { width } = useWindowDimensions();
+  const isTablet = width >= 700;
   const [activeTab, setActiveTab] = useState<BookTab>('sources');
 
   return (
     <Screen style={styles.screen}>
-      <AppHeader onProfileClick={onBack} />
+      <AppHeader />
 
-      <View style={styles.bookHeader}>
+      <View style={[styles.bookHeader, isTablet && styles.tabletBookHeader]}>
         <Pressable onPress={onBack} style={styles.backButton}>
           <Text style={styles.backArrow}>←</Text>
           <Text style={styles.backText}>My Books</Text>
         </Pressable>
 
-        <Text style={styles.bookPageTitle} numberOfLines={1}>
-          {book.title}
-        </Text>
+       
       </View>
 
       <View style={styles.tabContent}>
@@ -448,11 +487,13 @@ const styles = StyleSheet.create({
   },
   bookHeader: {
     width: '100%',
-    maxWidth: 448,
-    alignSelf: 'center',
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 8,
+  },
+  tabletBookHeader: {
+    maxWidth: 980,
+    paddingHorizontal: 32,
   },
   backButton: {
     flexDirection: 'row',
@@ -543,6 +584,12 @@ const styles = StyleSheet.create({
     paddingTop: 24,
     paddingBottom: 40,
     gap: 20,
+  },
+  tabletTabContent: {
+    width: '100%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    paddingHorizontal: 32,
   },
   sourceList: {
     gap: 10,
@@ -707,6 +754,9 @@ const styles = StyleSheet.create({
   toolCards: {
     gap: 16,
   },
+  tabletToolCards: {
+    flexDirection: 'row',
+  },
   toolCard: {
     position: 'relative',
     overflow: 'hidden',
@@ -720,6 +770,9 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 4 },
     elevation: 1,
+  },
+  tabletToolCard: {
+    flex: 1,
   },
   redAccent: {
     position: 'absolute',

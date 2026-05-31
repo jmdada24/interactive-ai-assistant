@@ -1,4 +1,5 @@
 import { useRouter } from 'expo-router';
+import { saveStudentProfile } from '../data/database';
 import { RegistrationScreen } from '../features/registration/RegistrationScreen';
 
 export default function RegisterRoute() {
@@ -6,8 +7,8 @@ export default function RegisterRoute() {
 
   return (
     <RegistrationScreen
-      onComplete={(firstName, lastName) => {
-        console.log('Registered user:', { firstName, lastName });
+      onComplete={async (firstName, lastName) => {
+        await saveStudentProfile(firstName, lastName);
 
         router.replace('/bookshelf' as never);
       }}
