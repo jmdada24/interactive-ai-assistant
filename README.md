@@ -413,11 +413,3 @@ Make AI-assisted learning accessible even in offline environments.
 - React Native SVG for Expo: https://docs.expo.dev/versions/latest/sdk/svg/
 
 ---
-
-## License
-
-Add your license information here.
-
-```txt
-MIT, Apache-2.0, or project-specific license
-```
