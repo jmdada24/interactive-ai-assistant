@@ -24,7 +24,7 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
     answerQuestion,
     generateStudyTool,
     embedLessonText,
-    embeddingModelName: 'multi-qa-minilm-l6-cos-v1',
+    embeddingModelName: 'multilingual-e5-small',
     isAvailable: false,
     hasCheckedDownload: true,
     shouldLoadModel: false,

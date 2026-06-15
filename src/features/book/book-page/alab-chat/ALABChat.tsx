@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Keyboard, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { KeyboardAwareScrollView, KeyboardAwareScrollViewRef, KeyboardStickyView } from 'react-native-keyboard-controller';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useOfflineSpeech } from '../../../../ai/useOfflineSpeech';
 import { IconMic, IconSend } from '../../../../components/icons/icons';
 import { appendChatMessage, hasProcessingSources, listRecentChatMessagesByBook } from '../../../../data/database';
@@ -25,6 +26,7 @@ export function ALABChat({
   onPromptHandled: () => void;
 }) {
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const isTablet = width >= 700;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -341,7 +343,7 @@ export function ALABChat({
             <Text style={styles.chatIntroTitle}>{"Let's study together..."}</Text>
 
             <Text style={styles.chatIntroText}>
-              I only use the lessons your teacher uploaded. Ask me anything,
+              I only use the lessons you uploaded. Ask me anything,
               request a quiz, or ask for a simpler explanation.
             </Text>
 
@@ -432,7 +434,7 @@ export function ALABChat({
           style={[
             styles.chatInputArea,
             {
-              paddingBottom: isComposerFocused ? 3 : 6,
+              paddingBottom: isComposerFocused ? 3 : Math.max(insets.bottom, 6),
             },
           ]}
         >

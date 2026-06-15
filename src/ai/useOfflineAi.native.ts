@@ -21,6 +21,7 @@ import {
 } from './retrieval';
 import {
   embeddingModelName,
+  formatEmbeddingInput,
   modelDownloadedKey,
   modelProfileKey,
   offlineEmbeddingModel,
@@ -140,10 +141,17 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       let queryEmbedding: Float32Array | null = null;
 
       if (embeddings.isReady) {
-        queryEmbedding = await embeddings.forward(question);
+        queryEmbedding = await embeddings.forward(
+          formatEmbeddingInput(question, 'query')
+        );
       }
 
-      const chunks = await retrieveRelevantChunks(bookId, question, queryEmbedding);
+      const chunks = await retrieveRelevantChunks(
+        bookId,
+        question,
+        queryEmbedding,
+        embeddingModelName
+      );
 
       if (chunks.length === 0) {
         return {
@@ -231,11 +239,12 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
           ? `${itemCount} ${mode} quiz topics from ${bookTitle}`
           : `${itemCount} key terms and concepts from ${bookTitle}`;
       const queryEmbedding = embeddings.isReady
-        ? await embeddings.forward(query)
+        ? await embeddings.forward(formatEmbeddingInput(query, 'query'))
         : null;
       const chunks = await retrieveStudyToolChunks(
         bookId,
         queryEmbedding,
+        embeddingModelName,
         itemCount
       );
 
@@ -273,7 +282,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         return null;
       }
 
-      return embeddings.forward(text);
+      return embeddings.forward(formatEmbeddingInput(text, 'passage'));
     },
     [embeddings, shouldLoadEmbeddings]
   );

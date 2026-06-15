@@ -12,8 +12,9 @@ import {
 import type { SourceProcessingStatus } from '../data/database';
 import { cleanStudentReadableText } from './textCleanup';
 
-const maxWordsPerChunk = 220;
-const overlapWords = 40;
+const maxWordsPerChunk = 300;
+const overlapWords = 60;
+const minimumWordsPerChunk = 24;
 
 type PageText = {
   pageNumber: number;
@@ -61,19 +62,21 @@ function chunkPage(page: PageText) {
     text: string;
     tokenEstimate: number;
   }[] = [];
-  const step = maxWordsPerChunk - overlapWords;
+  const step = Math.max(1, maxWordsPerChunk - overlapWords);
 
   for (let start = 0; start < words.length; start += step) {
     const chunkWords = words.slice(start, start + maxWordsPerChunk);
 
-    if (chunkWords.length < 24) {
+    if (chunkWords.length < minimumWordsPerChunk) {
       continue;
     }
 
+    const boundedChunkWords = chunkWords.slice(0, maxWordsPerChunk);
+
     chunks.push({
       pageNumber: page.pageNumber,
-      text: `Page ${page.pageNumber}\n\n${chunkWords.join(' ')}`,
-      tokenEstimate: Math.ceil(chunkWords.length * 1.35),
+      text: `Page ${page.pageNumber}\n\n${boundedChunkWords.join(' ')}`,
+      tokenEstimate: Math.ceil(boundedChunkWords.length * 1.35),
     });
   }
 
