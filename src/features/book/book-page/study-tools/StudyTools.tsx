@@ -16,7 +16,7 @@ function getToolsReadinessStatus(
   if (readiness.hasProcessingSources) {
     return {
       kind: 'loading',
-      message: 'Analyzing your PDF...',
+      message: 'Analyzing the book...',
     };
   }
 

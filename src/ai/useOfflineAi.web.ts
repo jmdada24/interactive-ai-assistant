@@ -11,7 +11,8 @@ export function useOfflineAi() {
 
   const generateStudyTool = async (
     _tool?: 'quiz' | 'flashcards',
-    _mode?: 'mcq' | 'fill_blank' | 'essay'
+    _mode?: 'mcq' | 'fill_blank' | 'essay',
+    _requestedCount?: number
   ): Promise<OfflineAiResponse> => ({
     text: 'Quizzes and flashcards are not available in this preview yet.',
     sources: [],

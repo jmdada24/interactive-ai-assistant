@@ -10,6 +10,7 @@ import {
   upsertSourceProcessingJob,
 } from '../data/database';
 import type { SourceProcessingStatus } from '../data/database';
+import { cleanStudentReadableText } from './textCleanup';
 
 const maxWordsPerChunk = 220;
 const overlapWords = 40;
@@ -20,26 +21,26 @@ type PageText = {
 };
 
 function normalizePdfText(text: string) {
-  return text
+  return cleanStudentReadableText(text)
     .replace(/\r/g, '\n')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
-function toMarkdownLikePage(page: PageText) {
+function toReadablePageText(page: PageText) {
   const text = normalizePdfText(page.text);
 
   if (!text) {
     return '';
   }
 
-  return `## Page ${page.pageNumber}\n\n${text}`;
+  return `Page ${page.pageNumber}\n\n${text}`;
 }
 
 function chunkPage(page: PageText) {
-  const markdownText = toMarkdownLikePage(page);
-  const words = markdownText.split(/\s+/).filter(Boolean);
+  const pageText = normalizePdfText(page.text);
+  const words = pageText.split(/\s+/).filter(Boolean);
 
   if (words.length === 0) {
     return [];
@@ -49,7 +50,7 @@ function chunkPage(page: PageText) {
     return [
       {
         pageNumber: page.pageNumber,
-        text: markdownText,
+        text: toReadablePageText(page),
         tokenEstimate: Math.ceil(words.length * 1.35),
       },
     ];
@@ -71,7 +72,7 @@ function chunkPage(page: PageText) {
 
     chunks.push({
       pageNumber: page.pageNumber,
-      text: chunkWords.join(' '),
+      text: `Page ${page.pageNumber}\n\n${chunkWords.join(' ')}`,
       tokenEstimate: Math.ceil(chunkWords.length * 1.35),
     });
   }
@@ -155,6 +156,14 @@ export async function processSourcePdfPlaceholder(
       text: chunk.text,
       tokenEstimate: chunk.tokenEstimate,
     }));
+
+    if (chunks.length === 0) {
+      await setStatus(
+        'failed',
+        'ALAB could not prepare readable study text from this PDF.'
+      );
+      return;
+    }
 
     const savedChunks = await replaceSourceChunks(sourceId, chunks);
 

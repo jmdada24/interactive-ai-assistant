@@ -50,7 +50,7 @@
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo run:android",
+    "android": "bash ./scripts/run-android.sh",
     "apk:debug": "bash ./scripts/build-android-debug-apk.sh",
     "apk:release": "bash ./scripts/build-android-release-apk.sh",
     "ios": "expo run:ios",

@@ -355,7 +355,7 @@ export function Sources({
           >
             <IconPlus color="#002576" size={12} />
             <Text style={styles.uploadButtonText}>
-              {isUploading ? 'Analyzing...' : 'Upload PDF'}
+              {isUploading ? 'Analyzing the book...' : 'Upload PDF'}
             </Text>
           </Pressable>
         </View>
@@ -390,7 +390,7 @@ export function Sources({
           <IconPlus color="#002576" size={12} />
           <Text style={styles.uploadButtonText}>
             {isUploading
-              ? 'ANALYZING...'
+              ? 'ANALYZING THE BOOK...'
               : hasReachedSourceLimit
                 ? 'PDF LIMIT REACHED'
                 : 'UPLOAD PDF'}
@@ -564,13 +564,10 @@ export function Sources({
 function formatProcessingStatus(source: Source) {
   switch (source.processingStatus) {
     case 'pending':
-      return 'Analyzing...';
     case 'extracting':
-      return 'Reading PDF...';
     case 'chunking':
-      return 'Preparing lesson...';
     case 'embedding':
-      return 'Preparing study helper...';
+      return 'Analyzing the book...';
     case 'ready':
       return 'Ready to study';
     case 'failed':

@@ -5,6 +5,7 @@ import {
   searchChunksByText,
   SourceChunk,
 } from '../data/database';
+import { cleanLessonText } from './textCleanup';
 
 export type RetrievedChunk = SourceChunk & {
   score: number;
@@ -209,7 +210,7 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
     {
       role: 'system' as const,
       content:
-        'You are ALAB, an offline study assistant for students. If the student asks simple general knowledge or arithmetic that does not need the lesson, answer directly and briefly without claiming to use sources. If the student asks about the lesson, answer using the provided lesson context first. If the lesson context is not enough for a lesson question, say the lesson does not have enough information yet, then give one brief study hint only if it helps. Keep wording simple, kind, and easy for students to follow. Do not mention technical model or retrieval details.',
+        'You are ALAB, an offline study assistant for students. If the student asks simple general knowledge or arithmetic that does not need the lesson, answer directly and briefly without claiming to use sources. If the student asks about the lesson, answer using the provided lesson context first. If the lesson context is not enough for a lesson question, say the lesson does not have enough information yet, then give one brief study hint only if it helps. Keep wording simple, kind, and easy for students to follow. Use short paragraphs with blank lines between ideas. Do not write markdown headings, hashtags, code fences, tables, or technical model and retrieval details.',
     },
     {
       role: 'user' as const,
@@ -219,7 +220,7 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
 }
 
 function trimContextText(text: string) {
-  const cleanText = text.replace(/\s+/g, ' ').trim();
+  const cleanText = cleanLessonText(text).replace(/\s+/g, ' ').trim();
 
   if (cleanText.length <= maxGroundedChunkCharacters) {
     return cleanText;

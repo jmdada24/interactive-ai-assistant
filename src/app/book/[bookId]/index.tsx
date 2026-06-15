@@ -42,14 +42,7 @@ export default function BookRoute() {
   return (
     <BookPage
       book={book}
-      onBack={() => {
-        if (router.canGoBack()) {
-          router.back();
-          return;
-        }
-
-        router.replace('/bookshelf' as never);
-      }}
+      onBack={() => router.replace('/bookshelf' as never)}
     />
   );
 }

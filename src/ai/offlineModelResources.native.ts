@@ -1,9 +1,9 @@
+import * as Device from 'expo-device';
 import {
   cacheDirectory,
   deleteAsync,
   getInfoAsync,
 } from 'expo-file-system/legacy';
-import * as Device from 'expo-device';
 import {
   models,
   MULTI_QA_MINILM_L6_COS_V1,
@@ -16,7 +16,7 @@ export const modelDownloadInProgressKey = 'offline_ai_model_download_in_progress
 export const modelProfileKey = 'offline_ai_model_profile';
 export const embeddingModelName = 'multi-qa-minilm-l6-cos-v1';
 
-export const offlineLlmModel = models.llm.qwen2_5_3b({ quant: true });
+export const offlineLlmModel = models.llm.qwen2_5_0_5b({ quant: true });
 export const offlineEmbeddingModel = MULTI_QA_MINILM_L6_COS_V1;
 export const offlineModelProfile = offlineLlmModel.modelName;
 export const minimumRecommendedMemoryBytes = 6 * 1024 ** 3;
@@ -51,7 +51,7 @@ export function getOfflineModelDeviceWarning() {
     Device.totalMemory &&
     Device.totalMemory < minimumRecommendedMemoryBytes
   ) {
-    return 'This phone may not have enough memory for the larger study helper. Use a stronger Android device or switch back to the lighter model.';
+    return 'This device or emulator may not have enough RAM for the larger study helper. Use an Android device or emulator with at least 6 GB RAM';
   }
 
   return null;

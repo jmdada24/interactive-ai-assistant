@@ -17,6 +17,11 @@ const targetSampleRate = 16000;
 const maxRecordingSeconds = 30;
 const maxSampleCount = targetSampleRate * maxRecordingSeconds;
 
+type AudioStreamHandle = {
+  start: () => void | Promise<void>;
+  stop: () => void | Promise<void>;
+};
+
 export function useOfflineSpeech() {
   const [hasCheckedDownload, setHasCheckedDownload] = useState(false);
   const [shouldLoadModel, setShouldLoadModel] = useState(false);
@@ -25,6 +30,8 @@ export function useOfflineSpeech() {
   const audioBuffersRef = useRef<Float32Array[]>([]);
   const sampleCountRef = useRef(0);
   const isListeningRef = useRef(false);
+  const didStartStreamRef = useRef(false);
+  const isStoppingStreamRef = useRef(false);
 
   const handleAudioBuffer = useCallback((buffer: AudioStreamBuffer) => {
     if (!isListeningRef.current || sampleCountRef.current >= maxSampleCount) {
@@ -87,10 +94,15 @@ export function useOfflineSpeech() {
     isListeningRef.current = false;
     setIsListening(false);
 
-    try {
-      audioStream.stream?.stop();
-    } catch {
-      // The stream may already be stopped by the native module.
+    if (didStartStreamRef.current && !isStoppingStreamRef.current) {
+      isStoppingStreamRef.current = true;
+
+      try {
+        await stopAudioStreamSafely(audioStream.stream);
+      } finally {
+        didStartStreamRef.current = false;
+        isStoppingStreamRef.current = false;
+      }
     }
 
     try {
@@ -124,6 +136,12 @@ export function useOfflineSpeech() {
       return false;
     }
 
+    const stream = audioStream.stream;
+
+    if (!stream) {
+      return false;
+    }
+
     const hasPermission = await requestPermission();
 
     if (!hasPermission) {
@@ -136,10 +154,28 @@ export function useOfflineSpeech() {
       playsInSilentMode: true,
     });
 
-    await audioStream.stream.start();
-    isListeningRef.current = true;
-    setIsListening(true);
-    return true;
+    try {
+      await stream.start();
+      didStartStreamRef.current = true;
+      isListeningRef.current = true;
+      setIsListening(true);
+      return true;
+    } catch {
+      didStartStreamRef.current = false;
+      isListeningRef.current = false;
+      setIsListening(false);
+
+      try {
+        await setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+        });
+      } catch {
+        // Restoring audio mode should not block the chat UI.
+      }
+
+      return false;
+    }
   }, [
     audioStream.stream,
     clearBuffers,
@@ -181,10 +217,15 @@ export function useOfflineSpeech() {
     }
   }, [clearBuffers, speechToText, stopStream]);
 
-  useEffect(() => () => {
-    isListeningRef.current = false;
-    clearBuffers();
-    audioStream.stream?.stop();
+  useEffect(() => {
+    const stream = audioStream.stream;
+
+    return () => {
+      isListeningRef.current = false;
+      didStartStreamRef.current = false;
+      clearBuffers();
+      void stopAudioStreamSafely(stream);
+    };
   }, [audioStream.stream, clearBuffers]);
 
   return {
@@ -201,6 +242,18 @@ export function useOfflineSpeech() {
     stopAndTranscribe,
     cancelListening,
   };
+}
+
+async function stopAudioStreamSafely(stream?: AudioStreamHandle | null) {
+  if (!stream) {
+    return;
+  }
+
+  try {
+    await stream.stop();
+  } catch {
+    // Expo can release AudioStream during remount cleanup before stop resolves.
+  }
 }
 
 function toMonoTargetRate(buffer: AudioStreamBuffer) {

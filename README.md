@@ -96,6 +96,30 @@ Full APK notes are in:
 docs/BUILD_APK.md
 ```
 
+For Android emulator testing after regenerating the native Android folder:
+
+```bash
+npm run android
+```
+
+The current checked-in native study helper uses quantized Qwen 2.5 3B for
+stronger answer-quality validation. That model needs RAM, not just emulator
+storage. If the app says the device or emulator may not have enough memory, the
+important setting is the emulator's **RAM**, not the virtual disk size.
+
+Recommended emulator setup for testing the current 3B profile:
+
+- 64-bit Android system image
+- API 36
+- arm64-v8a when testing on Apple Silicon
+- At least 6 GB RAM, preferably 8 GB RAM
+- Enough storage for the APK, downloaded model resources, copied PDFs, and local SQLite data
+
+If your emulator only has 2 GB or 4 GB RAM, ALAB may correctly block the larger
+study helper to avoid a crash. For basic UI, upload, navigation, and APK-flow
+testing, use `npm run android`. For real offline model testing before release,
+use either a stronger emulator or a real Android device with enough RAM.
+
 Run the release APK build:
 
 ```bash
