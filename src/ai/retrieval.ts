@@ -125,10 +125,11 @@ export async function retrieveRelevantChunks(
   bookId: string,
   query: string,
   queryEmbedding?: ArrayLike<number> | null,
+  embeddingModelName?: string,
   topK = 5
 ): Promise<RetrievedChunk[]> {
   if (queryEmbedding) {
-    const chunks = await listEmbeddedChunksByBook(bookId);
+    const chunks = await listEmbeddedChunksByBook(bookId, embeddingModelName);
     const rankedChunks = rankEmbeddedChunks(chunks, queryEmbedding, topK);
 
     if (rankedChunks.length > 0) {
@@ -157,10 +158,11 @@ export async function retrieveRelevantChunks(
 export async function retrieveStudyToolChunks(
   bookId: string,
   queryEmbedding?: ArrayLike<number> | null,
+  embeddingModelName?: string,
   topK = 20
 ): Promise<RetrievedChunk[]> {
   if (queryEmbedding) {
-    const chunks = await listEmbeddedChunksByBook(bookId);
+    const chunks = await listEmbeddedChunksByBook(bookId, embeddingModelName);
     const rankedChunks = rankEmbeddedChunks(chunks, queryEmbedding, topK);
 
     if (rankedChunks.length > 0) {

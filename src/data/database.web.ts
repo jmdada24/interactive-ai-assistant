@@ -142,6 +142,7 @@ export type SourceChunk = {
 };
 
 export type EmbeddedSourceChunk = SourceChunk & {
+  embeddingModelName: string | null;
   embedding: number[] | null;
 };
 
@@ -1115,7 +1116,8 @@ export async function saveChunkEmbedding(
 }
 
 export async function listEmbeddedChunksByBook(
-  bookId: string
+  bookId: string,
+  modelName?: string
 ): Promise<EmbeddedSourceChunk[]> {
   await initializeDatabase();
 
@@ -1137,9 +1139,13 @@ export async function listEmbeddedChunksByBook(
 
       return {
         ...mapChunk(state, chunk),
+        embeddingModelName: storedEmbedding?.modelName ?? null,
         embedding: storedEmbedding?.embedding ?? null,
       };
-    });
+    })
+    .filter(
+      (chunk) => !modelName || chunk.embeddingModelName === modelName
+    );
 }
 
 export async function listSourceChunksByBook(

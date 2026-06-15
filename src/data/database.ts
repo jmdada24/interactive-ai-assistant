@@ -52,6 +52,7 @@ type ChunkRow = {
 
 type ChunkEmbeddingRow = {
   chunk_id: number;
+  model_name: string;
   embedding_json: string;
 };
 
@@ -99,6 +100,7 @@ export type SourceChunk = {
 };
 
 export type EmbeddedSourceChunk = SourceChunk & {
+  embeddingModelName: string | null;
   embedding: number[] | null;
 };
 
@@ -1219,7 +1221,8 @@ export async function saveChunkEmbedding(
 }
 
 export async function listEmbeddedChunksByBook(
-  bookId: string
+  bookId: string,
+  modelName?: string
 ): Promise<EmbeddedSourceChunk[]> {
   await initializeDatabase();
 
@@ -1240,6 +1243,7 @@ export async function listEmbeddedChunksByBook(
             source_chunks.token_estimate,
             source_chunks.created_at,
             sources.filename AS source_name,
+            chunk_embeddings.model_name,
             chunk_embeddings.embedding_json
      FROM source_chunks
      INNER JOIN sources ON sources.id = source_chunks.source_id
@@ -1249,10 +1253,15 @@ export async function listEmbeddedChunksByBook(
     numericId
   );
 
-  return rows.map((row) => ({
-    ...mapChunkRow(row),
-    embedding: row.embedding_json ? JSON.parse(row.embedding_json) : null,
-  }));
+  return rows
+    .map((row) => ({
+      ...mapChunkRow(row),
+      embeddingModelName: row.model_name ?? null,
+      embedding: row.embedding_json ? JSON.parse(row.embedding_json) : null,
+    }))
+    .filter(
+      (chunk) => !modelName || chunk.embeddingModelName === modelName
+    );
 }
 
 export async function listSourceChunksByBook(

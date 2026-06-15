@@ -9,17 +9,48 @@ import {
   MULTI_QA_MINILM_L6_COS_V1,
   ResourceFetcherUtils,
 } from 'react-native-executorch';
+import type { TextEmbeddingsProps } from 'react-native-executorch';
 import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetcher';
 
 export const modelDownloadedKey = 'offline_ai_model_downloaded';
 export const modelDownloadInProgressKey = 'offline_ai_model_download_in_progress';
 export const modelProfileKey = 'offline_ai_model_profile';
-export const embeddingModelName = 'multi-qa-minilm-l6-cos-v1';
+export const embeddingModelName = 'multilingual-e5-small';
 
-export const offlineLlmModel = models.llm.qwen2_5_0_5b({ quant: true });
-export const offlineEmbeddingModel = MULTI_QA_MINILM_L6_COS_V1;
-export const offlineModelProfile = offlineLlmModel.modelName;
+export const offlineLlmModel = models.llm.qwen2_5_3b({ quant: true });
+export const offlineEmbeddingModel = {
+  modelName: embeddingModelName,
+  modelSource:
+    'https://huggingface.co/software-mansion/react-native-executorch-multilingual-e5-small/resolve/v0.9.0/xnnpack/multilingual_e5_small_xnnpack_fp32.pte',
+  tokenizerSource:
+    'https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokenizer.json',
+} as unknown as TextEmbeddingsProps['model'];
+export const offlineModelProfile = `${offlineLlmModel.modelName}+${embeddingModelName}`;
 export const minimumRecommendedMemoryBytes = 6 * 1024 ** 3;
+
+const embeddingQueryPrefix = 'query: ';
+const embeddingPassagePrefix = 'passage: ';
+
+export function formatEmbeddingInput(
+  text: string,
+  kind: 'query' | 'passage'
+) {
+  const cleanText = text.replace(/\s+/g, ' ').trim();
+  const prefix = kind === 'query' ? embeddingQueryPrefix : embeddingPassagePrefix;
+
+  if (!cleanText) {
+    return prefix.trim();
+  }
+
+  if (
+    cleanText.startsWith(embeddingQueryPrefix) ||
+    cleanText.startsWith(embeddingPassagePrefix)
+  ) {
+    return cleanText;
+  }
+
+  return `${prefix}${cleanText}`;
+}
 
 const previousAlabLlmModels = [
   models.llm.qwen2_5_0_5b({ quant: true }),
@@ -27,11 +58,19 @@ const previousAlabLlmModels = [
   models.llm.qwen2_5_3b({ quant: true }),
 ];
 
+const previousAlabEmbeddingModels = [
+  MULTI_QA_MINILM_L6_COS_V1,
+];
+
 const allAlabModelSources = [
   ...previousAlabLlmModels.flatMap((model) => [
     model.modelSource,
     model.tokenizerSource,
     model.tokenizerConfigSource,
+  ]),
+  ...previousAlabEmbeddingModels.flatMap((model) => [
+    model.modelSource,
+    model.tokenizerSource,
   ]),
   offlineEmbeddingModel.modelSource,
   offlineEmbeddingModel.tokenizerSource,
