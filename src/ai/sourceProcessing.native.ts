@@ -21,6 +21,20 @@ type PageText = {
   text: string;
 };
 
+export type SourceProcessingProgress = {
+  phase: 'starting' | 'extracting' | 'chunking' | 'embedding' | 'complete';
+  message: string;
+  percent: number;
+  current?: number;
+  total?: number;
+};
+
+type PdfFailureDetails = {
+  code: string;
+  message: string;
+  userMessage: string;
+};
+
 function normalizePdfText(text: string) {
   return cleanStudentReadableText(text)
     .replace(/\r/g, '\n')
@@ -84,34 +98,62 @@ function chunkPage(page: PageText) {
 }
 
 function errorMessageForPdfFailure(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const normalizedMessage = message.toLowerCase();
   const code =
     typeof error === 'object' && error && 'code' in error
       ? String((error as { code?: unknown }).code)
       : '';
 
-  if (
-    normalizedMessage.includes('already downloading') ||
-    normalizedMessage.includes('connection abort') ||
-    normalizedMessage.includes('executorch')
-  ) {
-    return 'ALAB read the PDF, but lesson search is still getting ready. Please try uploading this PDF again in a moment.';
-  }
-
   if (code === 'PASSWORD_REQUIRED') {
-    return 'This PDF needs a password before ALAB can read it.';
+    return {
+      code,
+      message,
+      userMessage: 'This PDF needs a password before ALAB can read it.',
+    };
   }
 
   if (code === 'INCORRECT_PASSWORD') {
-    return 'The PDF password did not work.';
+    return {
+      code,
+      message,
+      userMessage: 'The PDF password did not work.',
+    };
   }
 
   if (code === 'CORRUPT_PDF') {
-    return 'ALAB could not read this PDF file.';
+    return {
+      code,
+      message,
+      userMessage: 'ALAB could not read this PDF file.',
+    };
   }
 
-  return 'ALAB could not read this PDF yet.';
+  if (code === 'PDF_ERROR' || code === 'PDF_LOAD_ERROR') {
+    return {
+      code,
+      message,
+      userMessage: 'ALAB could not open this PDF file.',
+    };
+  }
+
+  if (code === 'PDF_EXTRACTION_ERROR' || code === 'PDF_PAGE_ERROR') {
+    return {
+      code,
+      message,
+      userMessage: 'ALAB opened this PDF but could not extract readable text from it.',
+    };
+  }
+
+  return {
+    code,
+    message,
+    userMessage: 'ALAB could not read this PDF yet.',
+  };
+}
+
+function errorMessageForPdfFailure(error: unknown) {
+  const details = detailsForPdfFailure(error);
+
+  return withDiagnostic(details.userMessage, details);
 }
 
 export async function processSourcePdfPlaceholder(
@@ -121,11 +163,16 @@ export async function processSourcePdfPlaceholder(
     embedText: (text: string) => Promise<ArrayLike<number> | null>;
     modelName: string;
     onStatusChange?: (status: SourceProcessingStatus) => void;
+    onProgress?: (progress: SourceProcessingProgress) => void;
   }
 ) {
   const setStatus = async (status: SourceProcessingStatus, error?: string) => {
     options?.onStatusChange?.(status);
     await upsertSourceProcessingJob(sourceId, status, error);
+  };
+
+  const setProgress = (progress: SourceProcessingProgress) => {
+    options?.onProgress?.(progress);
   };
 
   if (!fileUri || !isAvailable()) {
@@ -137,32 +184,89 @@ export async function processSourcePdfPlaceholder(
   }
 
   try {
+    setProgress({
+      phase: 'starting',
+      message: 'Opening the PDF...',
+      percent: 2,
+    });
     await setStatus('extracting');
 
-    const pageCount = await getPageCount(fileUri);
-    const pages: PageText[] = [];
+    let pageCount = 0;
 
-    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-      const text = normalizePdfText(
-        await extractTextFromPage(fileUri, pageNumber)
-      );
-
-      if (text) {
-        pages.push({ pageNumber, text });
-      }
-    }
-
-    if (pages.length === 0) {
+    try {
+      setProgress({
+        phase: 'extracting',
+        message: 'Counting PDF pages...',
+        percent: 5,
+      });
+      pageCount = await getPageCount(fileUri);
+    } catch (error) {
       await setStatus(
         'failed',
-        'ALAB could not find readable text in this PDF.'
+        errorMessageForPdfFailure(error)
       );
       return;
     }
 
+    const pages: PageText[] = [];
+    const pageFailures: PdfFailureDetails[] = [];
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      setProgress({
+        phase: 'extracting',
+        message: `Reading page ${pageNumber} of ${pageCount}...`,
+        percent: Math.min(55, Math.round(5 + (pageNumber / pageCount) * 50)),
+        current: pageNumber,
+        total: pageCount,
+      });
+
+      try {
+        const text = normalizePdfText(
+          await extractTextFromPage(fileUri, pageNumber)
+        );
+
+        if (text) {
+          pages.push({ pageNumber, text });
+        }
+      } catch (error) {
+        const details = detailsForPdfFailure(error);
+        pageFailures.push(details);
+        console.warn(
+          `ALAB PDF page extraction failed on page ${pageNumber}: ${details.code} - ${details.message}`
+        );
+      }
+    }
+
+    if (pages.length === 0) {
+      const firstPageFailure = pageFailures[0];
+
+      await setStatus(
+        'failed',
+        firstPageFailure
+          ? withDiagnostic(
+            'ALAB opened this PDF, but every page failed during text extraction.',
+            firstPageFailure
+          )
+          : 'ALAB could not find readable text in this PDF. It may be a scanned image-only file.'
+      );
+      return;
+    }
+
+    setProgress({
+      phase: 'chunking',
+      message: 'Saving readable pages...',
+      percent: 58,
+      current: pages.length,
+      total: pageCount,
+    });
     await replaceSourcePages(sourceId, pages);
     await setStatus('chunking');
 
+    setProgress({
+      phase: 'chunking',
+      message: 'Breaking the PDF into study chunks...',
+      percent: 62,
+    });
     const chunks = pages.flatMap(chunkPage).map((chunk, index) => ({
       chunkIndex: index,
       pageNumber: chunk.pageNumber,
@@ -179,30 +283,26 @@ export async function processSourcePdfPlaceholder(
     }
 
     const savedChunks = await replaceSourceChunks(sourceId, chunks);
+    let indexingWasSkipped = false;
 
     if (options) {
       await setStatus('embedding');
-      let embeddedChunkCount = 0;
 
       for (const chunk of savedChunks) {
         const embedding = await options.embedText(chunk.text);
 
-        if (embedding) {
+          if (!embedding) {
+            skippedEmbeddingIndexing = true;
+            indexingWasSkipped = true;
+            break;
+          }
+
           await saveChunkEmbedding(
             chunk.id,
             options.modelName,
             embedding
           );
-          embeddedChunkCount += 1;
         }
-      }
-
-      if (embeddedChunkCount === 0) {
-        await setStatus(
-          'failed',
-          'ALAB read the PDF, but lesson search is still getting ready. Please try uploading this PDF again in a moment.'
-        );
-        return;
       }
     }
 

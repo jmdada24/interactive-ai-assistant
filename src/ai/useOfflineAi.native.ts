@@ -5,6 +5,7 @@ import {
   useLLM,
   useTextEmbeddings,
 } from 'react-native-executorch';
+import type { AiAnswerConfidence, AiAnswerMode } from '../data/database';
 import {
   getAppSetting,
   hasReadySources,
@@ -13,15 +14,6 @@ import {
   saveGeneratedFlashcards,
   saveGeneratedQuiz,
 } from '../data/database';
-import type { AiAnswerConfidence, AiAnswerMode } from '../data/database';
-import {
-  buildGeneralMessages,
-  buildGroundedMessages,
-  formatSourceLabel,
-  retrieveBookOverviewChunks,
-  retrieveRelevantChunksWithMetadata,
-  retrieveStudyToolChunks,
-} from './retrieval';
 import {
   embeddingModelName,
   formatEmbeddingInput,
@@ -30,7 +22,18 @@ import {
   offlineEmbeddingModel,
   offlineLlmModel,
   offlineModelProfile,
+  offlineSearchModelProfile,
+  searchModelDownloadedKey,
+  searchModelProfileKey,
 } from './offlineModelResources.native';
+import {
+  buildGeneralMessages,
+  buildGroundedMessages,
+  formatSourceLabel,
+  retrieveBookOverviewChunks,
+  retrieveRelevantChunksWithMetadata,
+  retrieveStudyToolChunks,
+} from './retrieval';
 import {
   cleanLessonText,
   formatGeneralOutput,
@@ -74,6 +77,7 @@ const generationConfig = {
 
 export function useOfflineAi(bookId: string, bookTitle: string) {
   const [shouldLoadEmbeddings, setShouldLoadEmbeddings] = useState(false);
+  const [hasAnswerHelperPrepared, setHasAnswerHelperPrepared] = useState(false);
   const [shouldLoadLlm, setShouldLoadLlm] = useState(false);
   const [hasCheckedDownload, setHasCheckedDownload] = useState(false);
   const llm = useLLM({
@@ -91,10 +95,27 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     Promise.all([
       getAppSetting(modelDownloadedKey),
       getAppSetting(modelProfileKey),
+      getAppSetting(searchModelDownloadedKey),
+      getAppSetting(searchModelProfileKey),
     ])
-      .then(([downloadedValue, profileValue]) => {
-        if (isActive && downloadedValue === 'true' && profileValue === offlineModelProfile) {
+      .then(([
+        downloadedValue,
+        profileValue,
+        searchDownloadedValue,
+        searchProfileValue,
+      ]) => {
+        const hasFullStudyHelper =
+          downloadedValue === 'true' && profileValue === offlineModelProfile;
+        const hasSearchHelper =
+          searchDownloadedValue === 'true' &&
+          searchProfileValue === offlineSearchModelProfile;
+
+        if (isActive && (hasFullStudyHelper || hasSearchHelper)) {
           setShouldLoadEmbeddings(true);
+        }
+
+        if (isActive && hasFullStudyHelper) {
+          setHasAnswerHelperPrepared(true);
         }
       })
       .finally(() => {
@@ -184,16 +205,16 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         });
       }
 
-      if (!shouldLoadEmbeddings) {
+      const hasSources = await hasReadySources(bookId);
+      const intent = getAnswerIntent(question, hasSources);
+
+      if (!shouldLoadEmbeddings && intent === 'general') {
         return makeResponse({
           text: 'Please prepare the study helper from My Books first.',
           answerMode: 'status',
           fallbackReason: 'model_not_prepared',
         });
       }
-
-      const hasSources = await hasReadySources(bookId);
-      const intent = getAnswerIntent(question, hasSources);
 
       if (!hasSources && intent !== 'general') {
         return makeResponse({
@@ -230,6 +251,14 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       }
 
       if (intent === 'general') {
+        if (!hasAnswerHelperPrepared) {
+          return makeResponse({
+            text: 'Please finish preparing the answer helper from My Books first.',
+            answerMode: 'status',
+            fallbackReason: 'answer_helper_not_prepared',
+          });
+        }
+
         if (llm.error) {
           return makeResponse({
             text: 'The larger study helper had trouble opening on this device. Please close other apps and try again, or switch back to the lighter study helper.',
@@ -280,7 +309,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       let queryEmbedding: Float32Array | null = null;
       const retrievalStartedAt = Date.now();
 
-      if (embeddings.isReady) {
+      if (shouldLoadEmbeddings && embeddings.isReady) {
         queryEmbedding = await embeddings.forward(
           formatEmbeddingInput(question, 'query')
         );
@@ -306,6 +335,18 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       }
 
       const sources = chunks.map(formatSourceLabel);
+
+      if (!hasAnswerHelperPrepared) {
+        return makeResponse({
+          text: buildQuickGroundedAnswer(chunks),
+          sources,
+          answerMode: 'grounded',
+          confidence: retrievalResult.confidence,
+          retrievalMs,
+          topScore: retrievalResult.topScore,
+          fallbackReason: 'answer_helper_not_prepared',
+        });
+      }
 
       if (llm.error) {
         return makeResponse({
@@ -374,7 +415,15 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         fallbackReason,
       });
     },
-    [bookId, embeddings, hasCheckedDownload, llm, shouldLoadEmbeddings, shouldLoadLlm]
+    [
+      bookId,
+      embeddings,
+      hasAnswerHelperPrepared,
+      hasCheckedDownload,
+      llm,
+      shouldLoadEmbeddings,
+      shouldLoadLlm,
+    ]
   );
 
   const generateStudyTool = useCallback(
@@ -442,7 +491,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (!shouldLoadEmbeddings) {
         return makeStudyResponse({
-          text: `Please prepare the study helper from My Books before making ${tool === 'quiz' ? 'a quiz' : 'flashcards'}.`,
+          text: 'Please prepare the study helper from My Books first.',
           fallbackReason: 'model_not_prepared',
         });
       }
@@ -462,7 +511,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
           ? `${itemCount} ${mode} quiz topics from ${bookTitle}`
           : `${itemCount} key terms and concepts from ${bookTitle}`;
       const retrievalStartedAt = Date.now();
-      const queryEmbedding = embeddings.isReady
+      const queryEmbedding = shouldLoadEmbeddings && embeddings.isReady
         ? await embeddings.forward(formatEmbeddingInput(query, 'query'))
         : null;
       const chunks = await retrieveStudyToolChunks(
