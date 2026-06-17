@@ -100,6 +100,24 @@ export function Sources({
       return;
     }
 
+    if (!offlineAi.shouldLoadModel) {
+      Alert.alert(
+        'Prepare study helper first',
+        'Please prepare the study helper from My Books before uploading a PDF for ALAB to analyze.'
+      );
+      return;
+    }
+
+    if (!offlineAi.isEmbeddingReady) {
+      const progress = Math.round(offlineAi.embeddingDownloadProgress * 100);
+
+      Alert.alert(
+        'Lesson search is getting ready',
+        `Please wait until lesson search is ready${progress > 0 ? ` (${progress}%)` : ''}, then upload the PDF again.`
+      );
+      return;
+    }
+
     Alert.alert(
       'Allow PDF access?',
       'Project Alab will open your file picker so you can choose one lesson PDF for this book.',

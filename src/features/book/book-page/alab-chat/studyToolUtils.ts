@@ -15,20 +15,21 @@ export type Flashcard = {
 export function parseQuizQuestions(text: string): QuizQuestion[] {
   const normalizedText = text
     .replace(/\s+(?=Question\s*\d*\s*[:.)-])/gi, '\n\n')
+    .replace(/\s+(?=Question\s*:)/gi, '\n\n')
     .replace(/\s+(?=[A-Z][.)]\s+)/g, '\n')
     .replace(/\s+(?=Correct answer\s*:)/gi, '\n')
     .replace(/\s+(?=Explanation\s*:)/gi, '\n');
   const blocks = normalizedText
-    .split(/\n\s*\n|(?=Question\s*\d*[:.])/i)
+    .split(/(?=Question\s*\d*\s*[:.)-])|(?=Question\s*:)/i)
     .map((block) => block.trim())
-    .filter(Boolean);
+    .filter((block) => /^question/i.test(block));
 
   const questions = blocks
     .map<QuizQuestion | null>((block) => {
-      const lines = block
+      const lines = mergeQuizLines(block
         .split('\n')
         .map((line) => line.trim().replace(/^[-*]\s+/, '').replace(/^\d+[.)]\s+/, ''))
-        .filter(Boolean);
+        .filter(Boolean));
       const questionLine = lines.find((line) => /^question/i.test(line)) ?? lines[0];
       const question = cleanQuizQuestionText(
         questionLine.replace(/^question\s*\d*\s*[:.)-]?\s*/i, '')
@@ -61,11 +62,12 @@ export function parseQuizQuestions(text: string): QuizQuestion[] {
 
       return parsedQuestion;
     })
-    .filter((question): question is QuizQuestion => Boolean(question));
+    .filter((question): question is QuizQuestion => Boolean(question))
+    .filter((question) =>
+      question.options.length === 0 || Boolean(getCorrectOptionText(question))
+    );
 
-  return questions.length > 0
-    ? questions
-    : [{ question: text.trim(), options: [], answer: '', explanation: undefined }];
+  return questions;
 }
 
 export function parseFlashcards(text: string): Flashcard[] {
@@ -185,4 +187,45 @@ function normalizeQuizOptions(options: string[]) {
 
 function cleanMarkdownText(text: string) {
   return cleanStudentReadableText(text);
+}
+
+function mergeQuizLines(lines: string[]) {
+  const mergedLines: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const nextLine = lines[index + 1];
+    const followingLine = lines[index + 2];
+
+    if (/^[A-D][.)]$/i.test(line) && nextLine) {
+      mergedLines.push(`${line} ${nextLine}`);
+      index += 1;
+      continue;
+    }
+
+    if (/^correct$/i.test(line) && /^answer\s*[:.)-]?/i.test(nextLine ?? '')) {
+      const answerLine = nextLine && /^[A-D][.)]?$/i.test(nextLine.replace(/^answer\s*[:.)-]?\s*/i, '')) && followingLine
+        ? `${nextLine} ${followingLine}`
+        : nextLine ?? '';
+      mergedLines.push(`Correct ${answerLine}`);
+      index += answerLine === nextLine ? 1 : 2;
+      continue;
+    }
+
+    if (/^correct answer\s*[:.)-]?\s*[A-D][.)]?$/i.test(line) && nextLine) {
+      mergedLines.push(`${line} ${nextLine}`);
+      index += 1;
+      continue;
+    }
+
+    if (/^answer\s*[:.)-]?\s*[A-D][.)]?$/i.test(line) && nextLine) {
+      mergedLines.push(`${line} ${nextLine}`);
+      index += 1;
+      continue;
+    }
+
+    mergedLines.push(line);
+  }
+
+  return mergedLines;
 }

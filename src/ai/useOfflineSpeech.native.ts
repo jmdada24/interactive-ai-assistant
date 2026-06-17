@@ -25,6 +25,7 @@ type AudioStreamHandle = {
 export function useOfflineSpeech() {
   const [hasCheckedDownload, setHasCheckedDownload] = useState(false);
   const [shouldLoadModel, setShouldLoadModel] = useState(false);
+  const [shouldPrepareSpeech, setShouldPrepareSpeech] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const audioBuffersRef = useRef<Float32Array[]>([]);
@@ -60,7 +61,7 @@ export function useOfflineSpeech() {
   });
   const speechToText = useSpeechToText({
     model: models.speech_to_text.whisper_tiny(),
-    preventLoad: !isAvailable || !shouldLoadModel,
+    preventLoad: !isAvailable || !shouldLoadModel || !shouldPrepareSpeech,
   });
 
   useEffect(() => {
@@ -124,11 +125,21 @@ export function useOfflineSpeech() {
     return permission.granted;
   }, []);
 
+  const prepareVoiceInput = useCallback(() => {
+    if (!isAvailable || !hasCheckedDownload || !shouldLoadModel) {
+      return false;
+    }
+
+    setShouldPrepareSpeech(true);
+    return true;
+  }, [hasCheckedDownload, shouldLoadModel]);
+
   const startListening = useCallback(async () => {
     if (
       !isAvailable ||
       !hasCheckedDownload ||
       !shouldLoadModel ||
+      !shouldPrepareSpeech ||
       !speechToText.isReady ||
       isListeningRef.current ||
       isTranscribing
@@ -183,6 +194,7 @@ export function useOfflineSpeech() {
     isTranscribing,
     requestPermission,
     shouldLoadModel,
+    shouldPrepareSpeech,
     speechToText.isReady,
   ]);
 
@@ -235,8 +247,10 @@ export function useOfflineSpeech() {
     isReady: speechToText.isReady,
     hasCheckedDownload,
     shouldLoadModel,
+    shouldPrepareSpeech,
     downloadProgress: speechToText.downloadProgress,
     error: speechToText.error,
+    prepareVoiceInput,
     requestPermission,
     startListening,
     stopAndTranscribe,

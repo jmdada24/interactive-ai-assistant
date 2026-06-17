@@ -435,14 +435,14 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (!hasCheckedDownload) {
         return makeStudyResponse({
-          text: 'Checking your saved study helper...',
+          text: `Checking your saved study helper before making ${tool === 'quiz' ? 'this quiz' : 'these flashcards'}...`,
           fallbackReason: 'checking_download',
         });
       }
 
       if (!shouldLoadEmbeddings) {
         return makeStudyResponse({
-          text: 'Please prepare the study helper from My Books first.',
+          text: `Please prepare the study helper from My Books before making ${tool === 'quiz' ? 'a quiz' : 'flashcards'}.`,
           fallbackReason: 'model_not_prepared',
         });
       }
@@ -451,7 +451,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (!hasChunks) {
         return makeStudyResponse({
-          text: 'ALAB needs a ready source before making this study tool.',
+          text: `ALAB is still preparing your lesson. Please wait until the source says Ready to study, then ask for ${tool === 'quiz' ? 'the quiz' : 'flashcards'} again.`,
           fallbackReason: 'no_ready_chunks',
         });
       }
@@ -475,13 +475,22 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (chunks.length === 0) {
         return makeStudyResponse({
-          text: 'ALAB needs a ready source before making this study tool.',
+          text: `ALAB is still preparing your lesson. Please wait until the source says Ready to study, then ask for ${tool === 'quiz' ? 'the quiz' : 'flashcards'} again.`,
           retrievalMs,
           fallbackReason: 'no_study_tool_chunks',
         });
       }
 
       const toolText = buildSimpleStudyToolFallback(tool, chunks, mode, itemCount);
+
+      if (tool === 'quiz' && mode === 'mcq' && !hasValidMcqQuiz(toolText)) {
+        return makeStudyResponse({
+          text: 'ALAB needs a little more readable lesson text before making a multiple-choice quiz. Please try again after the source finishes analyzing.',
+          retrievalMs,
+          topScore: chunks[0]?.score ?? null,
+          fallbackReason: 'invalid_mcq_quiz',
+        });
+      }
 
       try {
         await saveGeneratedStudyTool(
@@ -507,11 +516,15 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
   const embedLessonText = useCallback(
     async (text: string): Promise<Float32Array | null> => {
-      if (!shouldLoadEmbeddings || !embeddings.isReady) {
+      if (!shouldLoadEmbeddings || !embeddings.isReady || embeddings.error) {
         return null;
       }
 
-      return embeddings.forward(formatEmbeddingInput(text, 'passage'));
+      try {
+        return await embeddings.forward(formatEmbeddingInput(text, 'passage'));
+      } catch {
+        return null;
+      }
     },
     [embeddings, shouldLoadEmbeddings]
   );
@@ -531,6 +544,24 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     embeddingDownloadProgress: embeddings.downloadProgress,
     error: llm.error ?? embeddings.error,
   };
+}
+
+function hasValidMcqQuiz(text: string) {
+  return text
+    .split(/(?=Question\s*:)/i)
+    .map((block) => block.trim())
+    .filter((block) => /^question\s*:/i.test(block))
+    .some((block) => {
+      const optionMatches = block.match(/(?:^|\n)[A-D][.)](?:\s+|\n).+/g) ?? [];
+      const answerMatch = block.match(/(?:^|\n)Correct\s*answer\s*:\s*([A-D])[.)]?(?:\s+|\n)?(.+)?/i);
+
+      if (optionMatches.length < 4 || !answerMatch) {
+        return false;
+      }
+
+      const answerIndex = answerMatch[1].toUpperCase().charCodeAt(0) - 65;
+      return Boolean(optionMatches[answerIndex]);
+    });
 }
 
 function isBadGroundedAnswer(answer: string) {
@@ -747,24 +778,11 @@ function uniqueTexts(items: string[]) {
   return unique;
 }
 
-function getKeyPhrase(sentence: string, fallbackIndex: number) {
-  const words = sentence
-    .replace(/[^a-zA-Z0-9\s-]/g, ' ')
-    .split(/\s+/)
-    .filter((word) => word.length > 3 && !noisyStudyWords.has(word.toLowerCase()))
-    .slice(0, 5);
-
-  if (words.length >= 2) {
-    return words.slice(0, 3).join(' ');
-  }
-
-  return `lesson detail ${fallbackIndex + 1}`;
-}
-
 type LessonFact = {
   term: string;
   detail: string;
   sourceText: string;
+  kind?: 'term' | 'statement';
 };
 
 function buildSimpleStudyToolFallback(
@@ -774,20 +792,24 @@ function buildSimpleStudyToolFallback(
   itemCount = tool === 'quiz' ? quizItemCount : flashcardItemCount
 ) {
   const facts = extractLessonFacts(chunks);
-  const sentences = facts.length > 0
-    ? facts.map((fact) => fact.sourceText)
-    : uniqueTexts(splitSentences(chunks));
+  const sentences = uniqueTexts(splitSentences(chunks));
   const baseSnippets = sentences.length > 0
     ? sentences
     : chunks.map((chunk) => cleanChunkText(chunk.text)).filter(Boolean);
   const targetCount = getStudyToolItemCount(tool, itemCount);
-  const repeatedFacts = repeatToCount(
-    facts.length > 0 ? facts : buildFactsFromSnippets(baseSnippets),
-    targetCount
-  );
+  const studyFacts = facts.length > 0 ? facts : buildFactsFromSnippets(baseSnippets);
+  const selectedFacts = tool === 'quiz'
+    ? buildQuizFacts(studyFacts, baseSnippets, targetCount)
+    : repeatToCount(studyFacts, targetCount);
+
+  if (selectedFacts.length === 0) {
+    return tool === 'quiz'
+      ? 'ALAB needs clearer lesson definitions before making a quiz.'
+      : 'ALAB needs clearer lesson definitions before making flashcards.';
+  }
 
   if (tool === 'flashcards') {
-    return repeatedFacts
+    return selectedFacts
       .map((fact) =>
         [
           `Front: ${fact.term}`,
@@ -797,9 +819,9 @@ function buildSimpleStudyToolFallback(
       .join('\n\n');
   }
 
-  return repeatedFacts
+  return selectedFacts
     .map((fact, index) =>
-      buildFallbackQuizQuestion(fact, repeatedFacts, index, mode)
+      buildFallbackQuizQuestion(fact, selectedFacts, index, mode)
     )
     .join('\n\n');
 }
@@ -832,13 +854,37 @@ function extractLessonFacts(chunks: { text: string }[]): LessonFact[] {
 }
 
 function buildFactsFromSnippets(snippets: string[]): LessonFact[] {
+  const definitionFacts = uniqueTexts(snippets)
+    .map(parseLessonFactFromDefinition)
+    .filter((fact): fact is LessonFact => Boolean(fact));
+
+  if (definitionFacts.length > 0) {
+    return definitionFacts;
+  }
+
   return uniqueTexts(snippets)
-    .map((snippet, index) => ({
-      term: titleCase(getKeyPhrase(snippet, index)),
-      detail: shortText(snippet, 220),
+    .filter(isUsefulSentence)
+    .slice(0, maxQuizItemCount)
+    .map((snippet) => ({
+      term: shortText(snippet, 130),
+      detail: 'This statement is true based on the lesson.',
       sourceText: snippet,
-    }))
-    .filter((fact) => isUsefulTerm(fact.term) && fact.detail.length > 20);
+      kind: 'statement' as const,
+    }));
+}
+
+function buildQuizFacts(
+  facts: LessonFact[],
+  snippets: string[],
+  targetCount: number
+) {
+  const selectedFacts = facts.slice(0, targetCount);
+
+  if (selectedFacts.length > 0) {
+    return selectedFacts;
+  }
+
+  return buildFactsFromSnippets(snippets).slice(0, targetCount);
 }
 
 function parseLessonFact(sentence: string): LessonFact | null {
@@ -848,9 +894,14 @@ function parseLessonFact(sentence: string): LessonFact | null {
     return null;
   }
 
+  const definitionFact = parseLessonFactFromDefinition(cleanSentence);
+
+  if (definitionFact) {
+    return definitionFact;
+  }
+
   const patterns = [
     /^(.{2,70}?)(?:\s+-\s+|\s*[:\u2013\u2014]\s*)(.+)$/i,
-    /^(.{2,70}?)\s+(is|are|means|refers to|describes|uses|is used for|is used to|are used for|are used to)\s+(.+)$/i,
   ];
 
   for (const pattern of patterns) {
@@ -871,6 +922,64 @@ function parseLessonFact(sentence: string): LessonFact | null {
         term: rawTerm,
         detail,
         sourceText: cleanSentence,
+        kind: 'term',
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseLessonFactFromDefinition(sentence: string): LessonFact | null {
+  const cleanSentence = cleanChunkText(sentence);
+  const calledMatch = cleanSentence.match(
+    /^(.{12,170}?)\s+(?:is|are)\s+called\s+(?:a|an|the)?\s*([A-Za-z][A-Za-z0-9 /()+#.-]{1,35})\.?$/i
+  );
+
+  if (calledMatch) {
+    const rawTerm = cleanStudyTerm(calledMatch[2]);
+    const detail = cleanStudyDetail(`${calledMatch[1]} is called ${rawTerm}`, rawTerm);
+
+    if (
+      isUsefulTerm(rawTerm) &&
+      isUsefulSentence(detail) &&
+      isAnswerableFact(rawTerm, detail)
+    ) {
+      return {
+        term: rawTerm,
+        detail,
+        sourceText: cleanSentence,
+        kind: 'term',
+      };
+    }
+  }
+
+  const definitionPatterns = [
+    /\b([A-Z][A-Za-z0-9 /()+#.-]{2,45})\s+(is|are|means|refers to|describes|uses|is used for|is used to|are used for|are used to)\s+(.+)$/i,
+    /\b([A-Z][A-Za-z0-9 /()+#.-]{2,45})(?:\s+-\s+|\s*[:\u2013\u2014]\s+)(.+)$/i,
+  ];
+
+  for (const pattern of definitionPatterns) {
+    const match = cleanSentence.match(pattern);
+
+    if (!match) {
+      continue;
+    }
+
+    const rawTerm = cleanStudyTerm(match[1]);
+    const rawDetail = match.length >= 4 ? `${match[2]} ${match[3]}` : match[2];
+    const detail = cleanStudyDetail(rawDetail, rawTerm);
+
+    if (
+      isUsefulTerm(rawTerm) &&
+      isUsefulSentence(detail) &&
+      isAnswerableFact(rawTerm, detail)
+    ) {
+      return {
+        term: rawTerm,
+        detail,
+        sourceText: cleanSentence,
+        kind: 'term',
       };
     }
   }
@@ -901,7 +1010,10 @@ function isUsefulTerm(term: string) {
 
   return (
     term.length >= 3 &&
-    term.length <= 70 &&
+    term.length <= 45 &&
+    !term.includes(',') &&
+    !term.includes('?') &&
+    !/\b(is|are|means|refers|called|enough|erased|first|level|pages|designed|absolute|beginner|everywhere|today)\b/i.test(term) &&
     !normalized.includes('question') &&
     !normalized.includes('answer') &&
     !normalized.includes('according') &&
@@ -911,6 +1023,24 @@ function isUsefulTerm(term: string) {
     !normalized.includes('lesson detail') &&
     !genericStudyTerms.has(normalized) &&
     !/^\d+$/.test(normalized)
+  );
+}
+
+function isAnswerableFact(term: string, detail: string) {
+  const normalizedTerm = normalizeOption(term);
+  const normalizedDetail = normalizeOption(detail);
+
+  return (
+    normalizedTerm.length > 0 &&
+    normalizedDetail.length >= 20 &&
+    !normalizedDetail.includes(normalizedTerm) &&
+    !normalizedDetail.includes('no prior knowledge') &&
+    !normalizedDetail.includes('beginner pages') &&
+    !normalizedDetail.includes('first edition') &&
+    !normalizedDetail.includes('ready to study') &&
+    !normalizedDetail.startsWith('this ') &&
+    !normalizedDetail.startsWith('it ') &&
+    normalizedDetail.split(/\s+/).length >= 4
   );
 }
 
@@ -954,9 +1084,16 @@ function buildFallbackQuizQuestion(
     ].join('\n');
   }
 
+  if (fact.kind === 'statement') {
+    return buildStatementQuizQuestion(fact, allFacts, index);
+  }
+
   const options = buildUniqueOptions(fact, allFacts, index);
-  const correctIndex = options.findIndex((option) => option === fact.term);
+  const correctIndex = options.findIndex(
+    (option) => normalizeOption(option) === normalizeOption(fact.term)
+  );
   const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
+  const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
 
   return [
     `Question: ${buildDefinitionQuestion(fact)}`,
@@ -964,16 +1101,39 @@ function buildFallbackQuizQuestion(
     `B. ${options[1]}`,
     `C. ${options[2]}`,
     `D. ${options[3]}`,
-    `Correct answer: ${answerLetter}. ${fact.term}`,
+    `Correct answer: ${answerLetter}. ${correctOption}`,
     `Explanation: ${shortText(fact.detail.replace(/_____+/g, fact.term), 170)}`,
   ].join('\n');
 }
 
+function buildStatementQuizQuestion(
+  fact: LessonFact,
+  allFacts: LessonFact[],
+  index: number
+) {
+  const options = buildStatementOptions(fact, allFacts, index);
+  const correctIndex = options.findIndex(
+    (option) => normalizeOption(option) === normalizeOption(fact.term)
+  );
+  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
+  const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
+
+  return [
+    'Question: Which statement is true based on the lesson?',
+    `A. ${options[0]}`,
+    `B. ${options[1]}`,
+    `C. ${options[2]}`,
+    `D. ${options[3]}`,
+    `Correct answer: ${answerLetter}. ${correctOption}`,
+    `Explanation: ${shortText(correctOption, 170)}`,
+  ].join('\n');
+}
+
 function buildDefinitionQuestion(fact: LessonFact) {
-  const detail = fact.detail.replace(/_____+/g, 'it');
+  const detail = fact.detail.replace(/_____+/g, 'this idea');
   const prompt = detail.charAt(0).toUpperCase() + detail.slice(1);
 
-  return `Which term best matches this lesson idea: ${shortText(prompt, 130)}?`;
+  return `Which word matches this meaning: ${shortText(prompt, 130)}?`;
 }
 
 function buildFillBlankQuestion(fact: LessonFact) {
@@ -991,27 +1151,61 @@ function buildUniqueOptions(
 ) {
   const distractors = [
     ...allFacts.map((item) => item.term),
-    'Software',
-    'Digital Tool',
-    'Hardware',
-    'Application',
-    'System',
-    'Data',
   ].filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
   const uniqueDistractors = uniqueByNormalized(distractors).slice(0, 12);
   const selectedDistractors = rotateItems(uniqueDistractors, index).slice(0, 3);
+  const fallbackDistractors = getFallbackDistractors(fact.term);
   const paddedOptions = uniqueByNormalized([
     fact.term,
     ...selectedDistractors,
-    'Software',
-    'Digital Tool',
-    'Hardware',
-    'Data',
-    'Application',
-    'Computer Program',
+    ...fallbackDistractors,
   ]).slice(0, 4);
 
   return rotateItems(paddedOptions, index).slice(0, 4);
+}
+
+function buildStatementOptions(
+  fact: LessonFact,
+  allFacts: LessonFact[],
+  index: number
+) {
+  const distractors = allFacts
+    .map((item) => item.term)
+    .filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
+  const fallbackDistractors = [
+    'The lesson says computers cannot process data.',
+    'The lesson says storage is only temporary.',
+    'The lesson says software is the physical part of a computer.',
+    'The lesson says a byte is smaller than a bit.',
+    'The lesson says input is the final result from a computer.',
+  ];
+  const options = uniqueByNormalized([
+    fact.term,
+    ...rotateItems(distractors, index).slice(0, 3),
+    ...fallbackDistractors,
+  ]).slice(0, 4);
+
+  return rotateItems(options, index).slice(0, 4);
+}
+
+function getFallbackDistractors(correctTerm: string) {
+  const normalizedTerm = normalizeOption(correctTerm);
+  const computingTerms = [
+    'Computer',
+    'Hardware',
+    'Software',
+    'RAM',
+    'Storage',
+    'Byte',
+    'Bit',
+    'Input',
+    'Output',
+    'Data',
+    'Application',
+    'Operating System',
+  ];
+
+  return computingTerms.filter((term) => normalizeOption(term) !== normalizedTerm);
 }
 
 function rotateItems<T>(items: T[], offset: number) {
@@ -1062,24 +1256,13 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-const noisyStudyWords = new Set([
-  'chapter',
-  'lesson',
-  'module',
-  'page',
-  'pages',
-  'pdf',
-  'uploaded',
-  'source',
-  'textbook',
-]);
-
 const genericStudyTerms = new Set([
   'activity',
   'application',
   'chapter',
   'definition',
   'digital tool',
+  'edition',
   'example',
   'hardware',
   'lesson',
@@ -1089,7 +1272,9 @@ const genericStudyTerms = new Set([
   'question',
   'section',
   'software',
+  'software hardware',
   'system',
+  'this',
   'topic',
 ]);
 
@@ -1098,7 +1283,10 @@ function getLessonFactCandidates(text: string) {
   const lineCandidates = cleanText
     .split('\n')
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter((line) =>
+      line.length <= 180 &&
+      /(?:\s+-\s+|[:\u2013\u2014]|\b(?:is|are|means|refers to|is used for|is used to|called)\b)/i.test(line)
+    );
 
   return uniqueTexts([
     ...lineCandidates,
@@ -1131,6 +1319,11 @@ function isNoisyLessonText(text: string) {
     /\bchapter\s+\d+\s+.+\bchapter\s+\d+\b/i.test(text) ||
     /^[-|_\s]+$/.test(text) ||
     normalized.includes('table of contents') ||
+    normalized.includes('first edition') ||
+    normalized.includes('level beginner') ||
+    normalized.includes('no prior knowledge') ||
+    normalized.includes('designed for absolute beginners') ||
+    normalized.includes('computers are everywhere today') ||
     normalized.includes('according to the pdf') ||
     normalized.includes('uploaded pdf')
   );

@@ -247,9 +247,9 @@ function QuizPanelContent({ text }: { text: string }) {
 
         {submitted ? (
           <View style={styles.answerCard}>
-            {activeQuestion.answer ? (
+            {correctOption || activeQuestion.answer ? (
               <Text style={styles.answerText}>
-                Answer: {activeQuestion.answer}
+                Answer: {correctOption || activeQuestion.answer}
               </Text>
             ) : null}
             {activeQuestion.explanation ? (

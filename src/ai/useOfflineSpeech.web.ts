@@ -3,6 +3,7 @@ export function useOfflineSpeech() {
   const stopAndTranscribe = async () => '';
   const cancelListening = async () => {};
   const requestPermission = async () => false;
+  const prepareVoiceInput = () => false;
 
   return {
     isVoiceAvailable: false,
@@ -13,6 +14,7 @@ export function useOfflineSpeech() {
     shouldLoadModel: false,
     downloadProgress: 0,
     error: null,
+    prepareVoiceInput,
     requestPermission,
     startListening,
     stopAndTranscribe,

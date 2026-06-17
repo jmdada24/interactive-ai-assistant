@@ -4,12 +4,12 @@ import {
   deleteAsync,
   getInfoAsync,
 } from 'expo-file-system/legacy';
+import type { ResourceSource } from 'react-native-executorch';
 import {
   models,
   MULTI_QA_MINILM_L6_COS_V1,
   ResourceFetcherUtils,
 } from 'react-native-executorch';
-import type { ResourceSource } from 'react-native-executorch';
 import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetcher';
 
 export const modelDownloadedKey = 'offline_ai_model_downloaded';
@@ -18,7 +18,7 @@ export const modelProfileKey = 'offline_ai_model_profile';
 const embeddingResourceName = 'distiluse-base-multilingual-cased-v2-8da4w';
 export const embeddingModelName = `${embeddingResourceName}-chunk100-noprefix-v2`;
 
-export const offlineLlmModel = models.llm.qwen2_5_1_5b({ quant: true });
+export const offlineLlmModel = models.llm.qwen2_5_3b({ quant: true });
 export const offlineEmbeddingModel =
   models.text_embedding.distiluse_base_multilingual_cased_v2();
 export const offlineModelProfile = `${offlineLlmModel.modelName}+${embeddingResourceName}`;

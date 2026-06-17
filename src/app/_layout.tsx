@@ -4,7 +4,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { LogBox, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -12,6 +12,11 @@ import { initializeExecutorch } from '../ai/executorch';
 
 initializeExecutorch();
 SystemUI.setBackgroundColorAsync('#f8f8f8');
+LogBox.ignoreLogs([
+  '[React Native ExecuTorch] Load failed: Error: Already downloading this file',
+  '[React Native ExecuTorch] Load failed: Error: Software caused connection abort',
+  '[React Native ExecuTorch] No content-length header',
+]);
 
 export default function RootLayout() {
   useEffect(() => {
@@ -24,7 +29,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <KeyboardProvider navigationBarTranslucent={false}>
+      <KeyboardProvider>
         <SafeAreaProvider>
           <BottomSheetModalProvider>
             <StatusBar style="dark" />

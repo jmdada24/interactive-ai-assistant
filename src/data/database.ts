@@ -829,8 +829,32 @@ export async function listSourcesWithProcessingByBook(
             sources.file_uri,
             sources.file_size,
             sources.created_at,
-            source_processing_jobs.status AS processing_status,
-            source_processing_jobs.error_message AS processing_error,
+            CASE
+              WHEN source_processing_jobs.status = 'ready'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM source_chunks
+                 INNER JOIN chunk_embeddings
+                   ON chunk_embeddings.chunk_id = source_chunks.id
+                 WHERE source_chunks.source_id = sources.id
+                 LIMIT 1
+               )
+              THEN 'failed'
+              ELSE source_processing_jobs.status
+            END AS processing_status,
+            CASE
+              WHEN source_processing_jobs.status = 'ready'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM source_chunks
+                 INNER JOIN chunk_embeddings
+                   ON chunk_embeddings.chunk_id = source_chunks.id
+                 WHERE source_chunks.source_id = sources.id
+                 LIMIT 1
+               )
+              THEN 'ALAB needs to analyze this book again before it is ready.'
+              ELSE source_processing_jobs.error_message
+            END AS processing_error,
             source_processing_jobs.processed_at
      FROM sources
      LEFT JOIN source_processing_jobs
@@ -891,10 +915,12 @@ export async function hasReadySources(bookId: string): Promise<boolean> {
   const database = await getDatabase();
   const row = await database.getFirstAsync<{ count: number }>(
     `SELECT COUNT(*) AS count
-     FROM sources
+     FROM source_chunks
      INNER JOIN source_processing_jobs
-       ON source_processing_jobs.source_id = sources.id
-     WHERE sources.book_id = ? AND source_processing_jobs.status = 'ready'`,
+       ON source_processing_jobs.source_id = source_chunks.source_id
+     INNER JOIN chunk_embeddings
+       ON chunk_embeddings.chunk_id = source_chunks.id
+     WHERE source_chunks.book_id = ? AND source_processing_jobs.status = 'ready'`,
     numericId
   );
 
@@ -916,6 +942,8 @@ export async function hasReadyStudyChunks(bookId: string): Promise<boolean> {
      FROM source_chunks
      INNER JOIN source_processing_jobs
        ON source_processing_jobs.source_id = source_chunks.source_id
+     INNER JOIN chunk_embeddings
+       ON chunk_embeddings.chunk_id = source_chunks.id
      WHERE source_chunks.book_id = ? AND source_processing_jobs.status = 'ready'`,
     numericId
   );

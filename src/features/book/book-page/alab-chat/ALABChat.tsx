@@ -277,6 +277,7 @@ export function ALABChat({
     }
 
     if (!offlineSpeech.isReady) {
+      offlineSpeech.prepareVoiceInput();
       const progress = Math.round(offlineSpeech.downloadProgress * 100);
       addLocalStatusMessage(
         `Voice input is getting ready${progress > 0 ? ` (${progress}%)` : ''}.`
@@ -316,15 +317,6 @@ export function ALABChat({
     handleSend(pendingPrompt.text);
     onPromptHandled();
   }, [handleSend, onPromptHandled, pendingPrompt]);
-
-  if (activeStudyMessage) {
-    return (
-      <StudyToolPanel
-        message={activeStudyMessage}
-        onClose={() => setActiveStudyMessage(null)}
-      />
-    );
-  }
 
   return (
     <View style={styles.chatRoot}>
@@ -375,6 +367,14 @@ export function ALABChat({
                     {isUser ? (
                       <Text style={[styles.messageText, styles.userMessageText]}>
                         {message.text}
+                      </Text>
+                    ) : message.kind === 'quiz' ? (
+                      <Text style={styles.messageText}>
+                        Your practice quiz is ready.
+                      </Text>
+                    ) : message.kind === 'flashcards' ? (
+                      <Text style={styles.messageText}>
+                        Your flashcards are ready.
                       </Text>
                     ) : (
                       <RenderedMarkdown text={message.text} />
@@ -492,6 +492,15 @@ export function ALABChat({
           </View>
         </View>
       </KeyboardStickyView>
+
+      {activeStudyMessage ? (
+        <View style={styles.studyPanelOverlay}>
+          <StudyToolPanel
+            message={activeStudyMessage}
+            onClose={() => setActiveStudyMessage(null)}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }

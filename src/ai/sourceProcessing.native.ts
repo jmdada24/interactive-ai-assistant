@@ -84,10 +84,20 @@ function chunkPage(page: PageText) {
 }
 
 function errorMessageForPdfFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalizedMessage = message.toLowerCase();
   const code =
     typeof error === 'object' && error && 'code' in error
       ? String((error as { code?: unknown }).code)
       : '';
+
+  if (
+    normalizedMessage.includes('already downloading') ||
+    normalizedMessage.includes('connection abort') ||
+    normalizedMessage.includes('executorch')
+  ) {
+    return 'ALAB read the PDF, but lesson search is still getting ready. Please try uploading this PDF again in a moment.';
+  }
 
   if (code === 'PASSWORD_REQUIRED') {
     return 'This PDF needs a password before ALAB can read it.';
@@ -172,6 +182,7 @@ export async function processSourcePdfPlaceholder(
 
     if (options) {
       await setStatus('embedding');
+      let embeddedChunkCount = 0;
 
       for (const chunk of savedChunks) {
         const embedding = await options.embedText(chunk.text);
@@ -182,7 +193,16 @@ export async function processSourcePdfPlaceholder(
             options.modelName,
             embedding
           );
+          embeddedChunkCount += 1;
         }
+      }
+
+      if (embeddedChunkCount === 0) {
+        await setStatus(
+          'failed',
+          'ALAB read the PDF, but lesson search is still getting ready. Please try uploading this PDF again in a moment.'
+        );
+        return;
       }
     }
 

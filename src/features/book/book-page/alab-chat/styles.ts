@@ -202,6 +202,15 @@ export const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f8f8',
   },
+  studyPanelOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 20,
+    elevation: 20,
+  },
   studyPanelHeader: {
     paddingHorizontal: 20,
     paddingTop: 14,

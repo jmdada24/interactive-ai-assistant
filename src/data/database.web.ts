@@ -767,11 +767,21 @@ export async function listSourcesWithProcessingByBook(
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map((source) => {
       const job = state.processingJobs.find((item) => item.sourceId === source.id);
+      const hasEmbeddedChunk = state.chunks.some((chunk) =>
+        chunk.sourceId === source.id &&
+        state.embeddings.some((embedding) => embedding.chunkId === chunk.id)
+      );
+      const processingStatus =
+        job?.status === 'ready' && !hasEmbeddedChunk ? 'failed' : job?.status ?? null;
+      const processingError =
+        job?.status === 'ready' && !hasEmbeddedChunk
+          ? 'ALAB needs to analyze this book again before it is ready.'
+          : job?.errorMessage ?? null;
 
       return {
         ...mapSource(source),
-        processingStatus: job?.status ?? null,
-        processingError: job?.errorMessage ?? null,
+        processingStatus,
+        processingError,
         processedAt: job?.processedAt ?? null,
       };
     });
@@ -825,9 +835,10 @@ export async function hasReadySources(bookId: string): Promise<boolean> {
 
   const state = readState();
 
-  return state.sources.some((source) => {
-    const job = state.processingJobs.find((item) => item.sourceId === source.id);
-    return source.bookId === numericId && job?.status === 'ready';
+  return state.chunks.some((chunk) => {
+    const job = state.processingJobs.find((item) => item.sourceId === chunk.sourceId);
+    const hasEmbedding = state.embeddings.some((item) => item.chunkId === chunk.id);
+    return chunk.bookId === numericId && job?.status === 'ready' && hasEmbedding;
   });
 }
 
@@ -847,9 +858,10 @@ export async function hasReadyStudyChunks(bookId: string): Promise<boolean> {
       .map((job) => job.sourceId)
   );
 
-  return state.chunks.some(
-    (chunk) => chunk.bookId === numericId && readySourceIds.has(chunk.sourceId)
-  );
+  return state.chunks.some((chunk) => {
+    const hasEmbedding = state.embeddings.some((item) => item.chunkId === chunk.id);
+    return chunk.bookId === numericId && readySourceIds.has(chunk.sourceId) && hasEmbedding;
+  });
 }
 
 export async function hasProcessingSources(bookId: string): Promise<boolean> {
