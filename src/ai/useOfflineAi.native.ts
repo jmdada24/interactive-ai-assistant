@@ -32,6 +32,7 @@ import {
   getAnswerIntent,
   isBadGroundedAnswer,
 } from './rag/agent/answers';
+import { classifyStudentInput } from './rag/agent/studentSafety';
 import type { StudyToolMode } from './rag/agent/studyTools';
 import {
   buildSimpleStudyToolFallback,
@@ -359,6 +360,16 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
           metrics,
         };
       };
+
+      const safety = classifyStudentInput(question);
+
+      if (safety.status === 'blocked') {
+        return makeResponse({
+          text: safety.responseText ?? '',
+          answerMode: 'status',
+          fallbackReason: 'student_safety_blocked',
+        });
+      }
 
       const answerGeneralQuestion = async (
         fallbackReasonPrefix = 'general'
@@ -733,6 +744,17 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
           metrics,
         };
       };
+
+      const safety = conversationContext
+        ? classifyStudentInput(conversationContext)
+        : { status: 'safe' as const };
+
+      if (safety.status === 'blocked') {
+        return makeStudyResponse({
+          text: safety.responseText ?? '',
+          fallbackReason: 'student_safety_blocked',
+        });
+      }
 
       if (!hasCheckedDownload) {
         return makeStudyResponse({

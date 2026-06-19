@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { classifyStudentInput } from '../../../../ai/rag/agent/studentSafety';
 import { useOfflineSpeech } from '../../../../ai/useOfflineSpeech';
 import { IconMic, IconSend } from '../../../../components/icons/icons';
 import { appendChatMessage, hasProcessingSources, listRecentChatMessagesByBook } from '../../../../data/database';
@@ -90,6 +91,29 @@ export function ALABChat({
     const question = (promptText ?? input).trim();
 
     if (!question) return;
+
+    const safety = classifyStudentInput(question);
+
+    if (safety.status === 'blocked') {
+      const safetyMessage: ChatMessage = {
+        id: `safety-${Date.now()}`,
+        role: 'ai',
+        text: safety.responseText ?? '',
+        kind: 'status',
+      };
+
+      if (isMountedRef.current) {
+        setInput('');
+        setMessages((previous) => [...previous, safetyMessage]);
+      }
+
+      await appendChatMessage(book.id, {
+        role: 'ai',
+        text: safetyMessage.text,
+        kind: 'status',
+      });
+      return;
+    }
 
     const conversationContext = buildConversationContext(messages);
     const requestId = activeRequestIdRef.current + 1;
