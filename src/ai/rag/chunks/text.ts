@@ -73,7 +73,6 @@ export function isNoisyLessonText(text: string) {
     normalized.includes('level beginner') ||
     normalized.includes('no prior knowledge') ||
     normalized.includes('designed for absolute beginners') ||
-    normalized.includes('computers are everywhere today') ||
     normalized.includes('according to the pdf') ||
     normalized.includes('uploaded pdf')
   );

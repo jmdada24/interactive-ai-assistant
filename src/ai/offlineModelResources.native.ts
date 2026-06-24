@@ -2,6 +2,7 @@ import * as Device from 'expo-device';
 import {
   cacheDirectory,
   deleteAsync,
+  documentDirectory,
   getInfoAsync,
 } from 'expo-file-system/legacy';
 import type { ResourceSource } from 'react-native-executorch';
@@ -21,9 +22,11 @@ export const searchModelProfileKey = 'offline_ai_search_model_profile';
 const embeddingResourceName = 'distiluse-base-multilingual-cased-v2-8da4w';
 export const embeddingModelName = `${embeddingResourceName}-chunk100-noprefix-v2`;
 
-export const offlineLlmModel = models.llm.qwen2_5_3b({ quant: true });
-export const offlineEmbeddingModel =
+const remoteOfflineLlmModel = models.llm.qwen2_5_3b({ quant: true });
+const remoteOfflineEmbeddingModel =
   models.text_embedding.distiluse_base_multilingual_cased_v2();
+export const offlineLlmModel = toLocalRuntimeModel(remoteOfflineLlmModel);
+export const offlineEmbeddingModel = toLocalRuntimeModel(remoteOfflineEmbeddingModel);
 export const offlineSearchModelProfile = embeddingResourceName;
 export const offlineModelProfile = `${offlineLlmModel.modelName}+${embeddingResourceName}`;
 export const minimumRecommendedMemoryBytes = 4 * 1024 ** 3;
@@ -34,14 +37,14 @@ export type OfflineModelResource = {
 };
 
 export const offlineSearchModelResources: OfflineModelResource[] = [
-  { label: 'lesson search files', source: offlineEmbeddingModel.modelSource },
-  { label: 'lesson search vocabulary', source: offlineEmbeddingModel.tokenizerSource },
+  { label: 'lesson search files', source: remoteOfflineEmbeddingModel.modelSource },
+  { label: 'lesson search vocabulary', source: remoteOfflineEmbeddingModel.tokenizerSource },
 ];
 
 export const offlineAnswerModelResources: OfflineModelResource[] = [
-  { label: 'study helper files', source: offlineLlmModel.modelSource },
-  { label: 'study helper vocabulary', source: offlineLlmModel.tokenizerSource },
-  { label: 'study helper settings', source: offlineLlmModel.tokenizerConfigSource },
+  { label: 'study helper files', source: remoteOfflineLlmModel.modelSource },
+  { label: 'study helper vocabulary', source: remoteOfflineLlmModel.tokenizerSource },
+  { label: 'study helper settings', source: remoteOfflineLlmModel.tokenizerConfigSource },
 ];
 
 export const offlineModelResources: OfflineModelResource[] = [
@@ -71,8 +74,8 @@ const allAlabModelSources = [
     model.modelSource,
     model.tokenizerSource,
   ]),
-  offlineEmbeddingModel.modelSource,
-  offlineEmbeddingModel.tokenizerSource,
+  remoteOfflineEmbeddingModel.modelSource,
+  remoteOfflineEmbeddingModel.tokenizerSource,
   ...previousAlabLlmModels.flatMap((model) => [
     model.modelSource,
     model.tokenizerSource,
@@ -85,8 +88,8 @@ const allAlabSearchModelSources = [
     model.modelSource,
     model.tokenizerSource,
   ]),
-  offlineEmbeddingModel.modelSource,
-  offlineEmbeddingModel.tokenizerSource,
+  remoteOfflineEmbeddingModel.modelSource,
+  remoteOfflineEmbeddingModel.tokenizerSource,
 ];
 
 const allAlabAnswerModelSources = [
@@ -197,6 +200,25 @@ export async function downloadOfflineModelResources(
   }) => void
 ) {
   await downloadResources(offlineModelResources, onProgress);
+}
+
+function toLocalRuntimeModel<T extends Record<string, unknown>>(model: T): T {
+  return {
+    ...model,
+    modelSource: toLocalRuntimeSource(model.modelSource),
+    tokenizerSource: toLocalRuntimeSource(model.tokenizerSource),
+    tokenizerConfigSource: toLocalRuntimeSource(model.tokenizerConfigSource),
+  };
+}
+
+function toLocalRuntimeSource(source: unknown) {
+  if (typeof source !== 'string' || !documentDirectory) {
+    return source;
+  }
+
+  const filename = ResourceFetcherUtils.getFilenameFromUri(source);
+
+  return `${documentDirectory}react-native-executorch/${filename}`;
 }
 
 async function downloadResources(

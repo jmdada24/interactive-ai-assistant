@@ -27,12 +27,31 @@ import {
   searchModelProfileKey,
 } from './offlineModelResources.native';
 import {
+  buildGroundedRetrievalQuery,
+  buildSummaryRetrievalQuery,
+  expandGroundedRetrievalQuestion,
+  getSimpleDefinitionTopic,
+  getStudyToolVariant,
+  isStrictSourceOnlyRequest,
+} from './answerRouting';
+import {
+  delay,
+  GenerationWatchdog,
+  isUsableGeneratedAnswer,
+  withGenerationWatchdog,
+} from './generationRuntime';
+import {
   buildDirectGroundedAnswer,
+  buildPdfOverviewSummary,
   buildPdfSummary,
-  getAnswerIntent,
   isBadGroundedAnswer,
 } from './rag/agent/answers';
+import { getChatRoute } from './rag/agent/chat';
 import { classifyStudentInput } from './rag/agent/studentSafety';
+import {
+  formatFlashcards,
+  parseRecoverableFlashcardDeck,
+} from './rag/agent/flashcards';
 import type { StudyToolMode } from './rag/agent/studyTools';
 import {
   buildSimpleStudyToolFallback,
@@ -47,6 +66,9 @@ import {
   buildGroundedMessages,
   buildStudyToolMessages,
   formatSourceLabel,
+  retrieveBookOverviewChunks,
+  retrieveDefinitionChunks,
+  retrieveDocumentOverviewText,
   retrieveRelevantChunksWithMetadata,
   retrieveSummaryChunks,
   retrieveStudyToolChunks,
@@ -70,23 +92,17 @@ type OfflineAiMetrics = {
   fallbackReason?: string | null;
 };
 
-type GenerationWatchdog = {
-  firstTokenMs: number;
-  idleMs: number;
-  maximumMs: number;
-};
-
 const answerGenerationWatchdog: GenerationWatchdog = {
-  firstTokenMs: 90000,
-  idleMs: 45000,
-  maximumMs: 300000,
+  firstTokenMs: 6000,
+  idleMs: 5000,
+  maximumMs: 15000,
 };
 const studyToolGenerationWatchdog: GenerationWatchdog = {
   firstTokenMs: 120000,
   idleMs: 60000,
   maximumMs: 600000,
 };
-const answerHelperWarmupTimeoutMs = 90000;
+const answerHelperWarmupTimeoutMs = 20000;
 const generationConfig = {
   temperature: 0.2,
   topP: 0.82,
@@ -96,10 +112,11 @@ const generationConfig = {
   batchTimeInterval: 80,
 };
 export function useOfflineAi(bookId: string, bookTitle: string) {
-  const [shouldLoadEmbeddings, setShouldLoadEmbeddings] = useState(false);
+  const [hasSearchHelperPrepared, setHasSearchHelperPrepared] = useState(false);
   const [hasAnswerHelperPrepared, setHasAnswerHelperPrepared] = useState(false);
   const [shouldLoadLlm, setShouldLoadLlm] = useState(false);
   const [hasCheckedDownload, setHasCheckedDownload] = useState(false);
+  const shouldLoadEmbeddings = hasSearchHelperPrepared;
   const llmReadyRef = useRef(false);
   const llmErrorRef = useRef<unknown>(null);
   const llmGeneratingRef = useRef(false);
@@ -147,12 +164,11 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
           searchProfileValue === offlineSearchModelProfile;
 
         if (isActive && (hasFullStudyHelper || hasSearchHelper)) {
-          setShouldLoadEmbeddings(true);
+          setHasSearchHelperPrepared(true);
         }
 
         if (isActive && hasFullStudyHelper) {
           setHasAnswerHelperPrepared(true);
-          setShouldLoadLlm(true);
         }
       })
       .finally(() => {
@@ -241,60 +257,36 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     [interruptLlm, llm]
   );
 
-  const waitForGenerationToSettle = useCallback(async (timeoutMs = 12000) => {
-    const startedAt = Date.now();
-
-    while (
-      (activeGenerationPromiseRef.current || llmGeneratingRef.current) &&
-      Date.now() - startedAt < timeoutMs
-    ) {
-      await delay(100);
-    }
-
-    return !activeGenerationPromiseRef.current && !llmGeneratingRef.current;
-  }, []);
-
   const generateReliableAnswer = useCallback(
     async (
       messages: Message[],
       validator: (answer: string) => boolean
     ) => {
-      const attempts = [messages, buildRecoveryMessages(messages)];
       let generationMs = 0;
 
-      for (const [index, attemptMessages] of attempts.entries()) {
-        if (generationCancelledRef.current) {
-          break;
-        }
-
-        if (index > 0) {
-          const didSettle = await waitForGenerationToSettle();
-
-          if (!didSettle || llmErrorRef.current) {
-            break;
-          }
-        }
-
-        const generationStartedAt = Date.now();
-        const rawAnswer = await generateLlmText(
-          attemptMessages,
-          answerGenerationWatchdog
-        );
-        generationMs += Date.now() - generationStartedAt;
-        const cleanAnswer = formatDirectAnswer(rawAnswer);
-
-        if (validator(cleanAnswer)) {
-          return {
-            text: cleanAnswer,
-            generationMs,
-            didRetry: index > 0,
-          };
-        }
+      if (generationCancelledRef.current) {
+        return { text: '', generationMs, didRetry: false };
       }
 
-      return { text: '', generationMs, didRetry: true };
+      const generationStartedAt = Date.now();
+      const rawAnswer = await generateLlmText(
+        messages,
+        answerGenerationWatchdog
+      );
+      generationMs += Date.now() - generationStartedAt;
+      const cleanAnswer = formatDirectAnswer(rawAnswer);
+
+      if (validator(cleanAnswer)) {
+        return {
+          text: cleanAnswer,
+          generationMs,
+          didRetry: false,
+        };
+      }
+
+      return { text: '', generationMs, didRetry: false };
     },
-    [generateLlmText, waitForGenerationToSettle]
+    [generateLlmText]
   );
 
   const answerQuestion = useCallback(
@@ -333,7 +325,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         };
 
         try {
-          const showedSources = false;
+          const showedSources = sources.length > 0;
 
           await saveAiPerformanceMetric({
             bookId,
@@ -421,6 +413,18 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         });
       };
 
+      const forwardQueryEmbedding = async (text: string) => {
+        if (!shouldLoadEmbeddings || !embeddings.isReady) {
+          return null;
+        }
+
+        try {
+          return await embeddings.forward(formatEmbeddingInput(text, 'query'));
+        } catch {
+          return null;
+        }
+      };
+
       if (!isAvailable) {
         return makeResponse({
           text: 'The study helper is not available on this device yet.',
@@ -438,9 +442,18 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       }
 
       const hasSources = await hasReadySources(bookId);
-      const intent = getAnswerIntent(question, hasSources);
-      const isExplicitLessonQuestion =
-        getAnswerIntent(question, false) === 'grounded';
+      const chatRoute = getChatRoute(question, hasSources);
+      const intent = chatRoute.intent;
+      const isExplicitLessonQuestion = chatRoute.reason === 'explicit_source';
+
+      if (chatRoute.directAnswer) {
+        return makeResponse({
+          text: chatRoute.directAnswer,
+          answerMode: 'general',
+          confidence: 'high',
+          fallbackReason: chatRoute.reason,
+        });
+      }
 
       if (!shouldLoadEmbeddings && intent === 'general') {
         return answerGeneralQuestion('model_not_prepared_general');
@@ -455,11 +468,29 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       }
 
       if (intent === 'summary') {
+        const isFastOverviewRequest = chatRoute.reason === 'source_overview';
+
+        if (isFastOverviewRequest) {
+          const retrievalStartedAt = Date.now();
+          const overview = await retrieveDocumentOverviewText(bookId);
+          const retrievalMs = Date.now() - retrievalStartedAt;
+          const fallbackSummary = buildPdfOverviewSummary(overview.text);
+
+          if (overview.text && fallbackSummary) {
+            return makeResponse({
+              text: fallbackSummary,
+              sources: overview.sources,
+              answerMode: 'summary',
+              confidence: 'low',
+              retrievalMs,
+              fallbackReason: 'overview_direct_page_text',
+            });
+          }
+        }
+
         const retrievalStartedAt = Date.now();
         const summaryQuery = buildSummaryRetrievalQuery(question, conversationContext);
-        const summaryEmbedding = shouldLoadEmbeddings && embeddings.isReady
-          ? await embeddings.forward(formatEmbeddingInput(summaryQuery, 'query'))
-          : null;
+        const summaryEmbedding = await forwardQueryEmbedding(summaryQuery);
         const chunks = await retrieveSummaryChunks(
           bookId,
           question,
@@ -480,75 +511,29 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         }
 
         const sources = chunks.slice(0, 5).map(formatSourceLabel);
+        const fallbackSummary = buildPdfSummary(chunks);
 
-        if (!hasAnswerHelperPrepared) {
+        if (fallbackSummary) {
           return makeResponse({
-            text: 'I found readable lesson text to summarize, but the full study helper needs to be prepared before ALAB can explain it naturally. Please finish preparing the study helper from My Books first.',
-            answerMode: 'status',
-            retrievalMs,
-            topScore: chunks[0]?.score ?? null,
-            fallbackReason: 'summary_answer_helper_not_prepared',
-          });
-        }
-
-        if (llmErrorRef.current) {
-          return makeResponse({
-            text: 'I found readable lesson text to summarize, but the study helper had trouble opening on this device. Please close other apps and try again.',
-            answerMode: 'status',
-            retrievalMs,
-            topScore: chunks[0]?.score ?? null,
-            fallbackReason: 'summary_llm_error',
-          });
-        }
-
-        const isAnswerHelperReady = llm.isReady || await waitForAnswerHelperReady();
-
-        if (!isAnswerHelperReady) {
-          return makeResponse({
-            text: 'I found readable lesson text, but ALAB is still opening the study helper so it can summarize it properly. Please ask again in a moment.',
-            answerMode: 'status',
-            retrievalMs,
-            topScore: chunks[0]?.score ?? null,
-            fallbackReason: 'summary_llm_warmup_timeout',
-          });
-        }
-
-        llm.configure({ generationConfig });
-
-        const generated = await generateReliableAnswer(
-          buildGroundedMessages(
-            `Summarize this lesson part for the student.\nStudent request: ${question}`,
-            chunks,
-            conversationContext
-          ) as Message[],
-          isUsableGroundedAnswer
-        );
-
-        if (!generated.text) {
-          const fallbackSummary = buildPdfSummary(chunks);
-
-          return makeResponse({
-            text: fallbackSummary ||
-              'I found readable lesson text, but it is too fragmented for a complete summary. Ask about one topic, section, or keyword from the lesson and I will focus on that part.',
+            text: fallbackSummary,
             sources,
-            answerMode: fallbackSummary ? 'summary' : 'status',
-            confidence: fallbackSummary ? 'low' : 'none',
+            answerMode: 'summary',
+            confidence: 'low',
             retrievalMs,
-            generationMs: generated.generationMs,
             topScore: chunks[0]?.score ?? null,
-            fallbackReason: 'summary_llm_invalid_answer',
+            fallbackReason: isFastOverviewRequest
+              ? 'summary_direct_overview_answer'
+              : 'summary_direct_answer',
           });
         }
 
         return makeResponse({
-          text: generated.text,
-          sources,
-          answerMode: 'summary',
-          confidence: 'medium',
+          text: 'I found readable lesson text, but it is too fragmented for a complete summary. Ask about one topic, section, or keyword from the lesson and I will focus on that part.',
+          answerMode: 'status',
+          confidence: 'none',
           retrievalMs,
-          generationMs: generated.generationMs,
           topScore: chunks[0]?.score ?? null,
-          fallbackReason: generated.didRetry ? 'summary_recovered_on_retry' : null,
+          fallbackReason: 'summary_direct_unavailable',
         });
       }
 
@@ -558,28 +543,43 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       let queryEmbedding: Float32Array | null = null;
       const retrievalStartedAt = Date.now();
+      const definitionTopic = getSimpleDefinitionTopic(question);
       const retrievalQuery = buildGroundedRetrievalQuery(
-        question,
+        expandGroundedRetrievalQuestion(question),
         conversationContext
       );
 
-      if (shouldLoadEmbeddings && embeddings.isReady) {
-        queryEmbedding = await embeddings.forward(
-          formatEmbeddingInput(retrievalQuery, 'query')
-        );
-      }
+      queryEmbedding = await forwardQueryEmbedding(retrievalQuery);
 
-      const retrievalResult = await retrieveRelevantChunksWithMetadata(
+      let retrievalResult = await retrieveRelevantChunksWithMetadata(
         bookId,
         retrievalQuery,
         queryEmbedding,
-        embeddingModelName
+        embeddingModelName,
+        definitionTopic ? 6 : 3
       );
-      const retrievalMs = Date.now() - retrievalStartedAt;
-      const chunks = retrievalResult.chunks;
+      let retrievalMs = Date.now() - retrievalStartedAt;
+      let chunks = retrievalResult.chunks;
+
+      if (chunks.length === 0 && definitionTopic) {
+        const definitionResult = await retrieveDefinitionChunks(
+          bookId,
+          definitionTopic,
+          6
+        );
+        retrievalMs = Date.now() - retrievalStartedAt;
+
+        if (definitionResult.chunks.length > 0) {
+          retrievalResult = definitionResult;
+          chunks = definitionResult.chunks;
+        }
+      }
 
       if (chunks.length === 0) {
-        if (!isExplicitLessonQuestion) {
+        if (
+          !isExplicitLessonQuestion ||
+          !isStrictSourceOnlyRequest(question)
+        ) {
           return answerGeneralQuestion('no_retrieval_general');
         }
 
@@ -592,83 +592,88 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         });
       }
 
-      const sources = chunks.map(formatSourceLabel);
+      let answerChunks = chunks;
+      let sources = chunks.slice(0, 3).map(formatSourceLabel);
+      let directAnswer = buildDirectGroundedAnswer(question, answerChunks);
+      let directFallbackReason = 'specific_retrieval_direct';
 
-      if (
-        retrievalResult.confidence === 'low' &&
-        !isExplicitLessonQuestion
-      ) {
-        return answerGeneralQuestion('low_retrieval_general');
+      if (!directAnswer && definitionTopic) {
+        const overviewChunks = await retrieveBookOverviewChunks(bookId, 16);
+        const overviewAnswer = buildDirectGroundedAnswer(question, overviewChunks);
+
+        retrievalMs = Date.now() - retrievalStartedAt;
+
+        if (overviewAnswer) {
+          answerChunks = overviewChunks;
+          sources = answerChunks.slice(0, 3).map(formatSourceLabel);
+          directAnswer = overviewAnswer;
+          directFallbackReason = 'specific_definition_overview_direct';
+        }
       }
 
-      if (!hasAnswerHelperPrepared) {
+      if (!directAnswer && definitionTopic) {
+        if (hasAnswerHelperPrepared && !llmErrorRef.current) {
+          const isAnswerHelperReady = await waitForAnswerHelperReady();
+
+          if (isAnswerHelperReady) {
+            llm.configure({ generationConfig });
+
+            const generated = await generateReliableAnswer(
+              buildGroundedMessages(
+                question,
+                answerChunks.slice(0, 4),
+                conversationContext
+              ) as Message[],
+              (answer) =>
+                isUsableGeneratedAnswer(answer) &&
+                !isBadGroundedAnswer(answer)
+            );
+
+            if (generated.text) {
+              return makeResponse({
+                text: generated.text,
+                sources,
+                answerMode: 'grounded',
+                confidence: retrievalResult.confidence,
+                retrievalMs,
+                generationMs: generated.generationMs,
+                topScore: retrievalResult.topScore,
+                fallbackReason: 'specific_definition_grounded_generation',
+              });
+            }
+          }
+        }
+
         return makeResponse({
-          text: 'I found relevant lesson text, but the full study helper needs to be prepared before ALAB can explain it naturally. Please finish preparing the study helper from My Books first.',
-          answerMode: 'status',
+          text: 'I found related lesson text, but ALAB could not prepare a clear definition from it yet. Try asking for the chapter or topic summary.',
+          sources,
+          answerMode: 'grounded',
+          confidence: 'low',
           retrievalMs,
           topScore: retrievalResult.topScore,
-          fallbackReason: 'grounded_answer_helper_not_prepared',
+          fallbackReason: 'specific_definition_related_text_no_clear_answer',
         });
       }
 
-      if (llmErrorRef.current) {
+      if (directAnswer) {
         return makeResponse({
-          text: 'I found relevant lesson text, but the study helper had trouble opening on this device. Please close other apps and try again.',
-          answerMode: 'status',
+          text: directAnswer,
+          sources,
+          answerMode: 'grounded',
+          confidence: retrievalResult.confidence,
           retrievalMs,
           topScore: retrievalResult.topScore,
-          fallbackReason: 'grounded_llm_error',
-        });
-      }
-
-      const isAnswerHelperReady = llm.isReady || await waitForAnswerHelperReady();
-
-      if (!isAnswerHelperReady) {
-        return makeResponse({
-          text: 'I found relevant lesson text, but ALAB is still opening the study helper so it can explain the answer properly. Please ask again in a moment.',
-          answerMode: 'status',
-          retrievalMs,
-          topScore: retrievalResult.topScore,
-          fallbackReason: 'grounded_llm_warmup_timeout',
-        });
-      }
-
-      llm.configure({ generationConfig });
-
-      const generated = await generateReliableAnswer(
-        buildGroundedMessages(
-          question,
-          chunks,
-          conversationContext
-        ) as Message[],
-        isUsableGroundedAnswer
-      );
-
-      if (!generated.text) {
-        const fallbackAnswer = buildDirectGroundedAnswer(question, chunks);
-
-        return makeResponse({
-          text: fallbackAnswer ||
-            'This lesson does not provide enough information to answer that.',
-          sources: fallbackAnswer ? sources : [],
-          answerMode: fallbackAnswer ? 'grounded' : 'status',
-          confidence: fallbackAnswer ? 'low' : 'none',
-          retrievalMs,
-          generationMs: generated.generationMs,
-          topScore: retrievalResult.topScore,
-          fallbackReason: 'grounded_generation_failed_direct_fallback',
+          fallbackReason: directFallbackReason,
         });
       }
 
       return makeResponse({
-        text: generated.text,
-        sources,
-        answerMode: 'grounded',
-        confidence: retrievalResult.confidence,
+        text: 'This lesson does not provide enough information to answer that.',
+        answerMode: 'status',
+        confidence: 'none',
         retrievalMs,
-        generationMs: generated.generationMs,
         topScore: retrievalResult.topScore,
-        fallbackReason: generated.didRetry ? 'grounded_recovered_on_retry' : null,
+        fallbackReason: 'specific_retrieval_no_direct_answer',
       });
     },
     [
@@ -819,9 +824,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         : 'study_tool_local_fallback_answer_helper_not_prepared';
 
       if (hasAnswerHelperPrepared && !llmErrorRef.current) {
-        const isAnswerHelperReady = llm.isReady || await waitForAnswerHelperReady();
-
-        if (isAnswerHelperReady) {
+        if (llm.isReady) {
           llm.configure({ generationConfig });
           const generationStartedAt = Date.now();
           const generatedToolText = await generateLlmText(
@@ -851,26 +854,52 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
             finalToolText = mergedToolText;
           }
 
-          if (generatedItemCount >= itemCount) {
+          const mergedItemCount = countValidStudyToolItems(
+            tool,
+            mode,
+            finalToolText
+          );
+
+          if (generatedItemCount >= itemCount && mergedItemCount >= itemCount) {
             confidence = 'high';
             fallbackReason = null;
-          } else if (generatedItemCount > 0) {
+          } else if (mergedItemCount >= itemCount) {
             confidence = 'medium';
             fallbackReason = 'study_tool_llm_partial_local_completion';
+          } else if (generatedItemCount > 0) {
+            confidence = 'low';
+            fallbackReason = 'study_tool_llm_partial_count_shortfall';
           } else {
             fallbackReason = 'study_tool_llm_invalid_local_fallback';
           }
         } else {
-          fallbackReason = 'study_tool_llm_warmup_local_fallback';
+          fallbackReason = 'study_tool_llm_not_open_local_fallback';
         }
       } else if (hasAnswerHelperPrepared && llmErrorRef.current) {
         fallbackReason = 'study_tool_llm_error_local_fallback';
       }
 
+      let finalItemCount = countValidStudyToolItems(tool, mode, finalToolText);
+
+      if (tool === 'quiz' && finalItemCount === 0) {
+        return makeStudyResponse({
+          text: `ALAB could not make quiz questions yet. Please try again.`,
+          retrievalMs,
+          generationMs,
+          topScore: chunks[0]?.score ?? null,
+          fallbackReason: fallbackReason ?? 'quiz_count_shortfall',
+        });
+      }
+
+      if (tool === 'quiz' && finalItemCount < itemCount) {
+        confidence = confidence === 'high' ? 'medium' : confidence;
+        fallbackReason = fallbackReason ?? 'quiz_clean_count_shortfall';
+      }
+
       if (
         tool === 'quiz' &&
-        (countValidStudyToolItems(tool, mode, finalToolText) === 0 ||
-          (mode === 'mcq' && !hasValidMcqQuiz(finalToolText)))
+        mode === 'mcq' &&
+        !hasValidMcqQuiz(finalToolText)
       ) {
         return makeStudyResponse({
           text: 'ALAB found readable lesson text, but it does not contain enough distinct facts to build a multiple-choice quiz yet.',
@@ -883,15 +912,31 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (
         tool === 'flashcards' &&
-        countValidStudyToolItems(tool, mode, finalToolText) === 0
+        finalItemCount < itemCount
       ) {
-        return makeStudyResponse({
-          text: 'ALAB found readable lesson text, but it does not contain enough clear terms and definitions to build flashcards yet.',
-          retrievalMs,
-          generationMs,
-          topScore: chunks[0]?.score ?? null,
-          fallbackReason: 'invalid_flashcards',
-        });
+        const recoveredFlashcards = parseRecoverableFlashcardDeck(finalToolText, itemCount);
+
+        if (recoveredFlashcards.length > finalItemCount) {
+          finalToolText = formatFlashcards(recoveredFlashcards);
+          finalItemCount = countValidStudyToolItems(tool, mode, finalToolText);
+          confidence = finalItemCount >= itemCount ? 'high' : 'medium';
+          fallbackReason = finalItemCount >= itemCount
+            ? fallbackReason
+            : 'flashcard_clean_count_shortfall';
+        }
+
+        if (finalItemCount === 0) {
+          return makeStudyResponse({
+            text: 'ALAB found readable lesson text, but it does not contain enough clear terms and definitions to build flashcards yet.',
+            retrievalMs,
+            generationMs,
+            topScore: chunks[0]?.score ?? null,
+            fallbackReason: fallbackReason ?? 'invalid_flashcards',
+          });
+        } else {
+          confidence = confidence === 'high' ? 'medium' : confidence;
+          fallbackReason = fallbackReason ?? 'flashcard_clean_count_shortfall';
+        }
       }
 
       try {
@@ -924,7 +969,6 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       hasCheckedDownload,
       llm,
       shouldLoadEmbeddings,
-      waitForAnswerHelperReady,
     ]
   );
 
@@ -982,7 +1026,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     isAvailable,
     hasCheckedDownload,
     isAnswerHelperPrepared: hasAnswerHelperPrepared,
-    shouldLoadModel: shouldLoadEmbeddings,
+    shouldLoadModel: hasAnswerHelperPrepared || hasSearchHelperPrepared,
     isModelReady: llm.isReady,
     isEmbeddingReady: embeddings.isReady,
     isGenerating: llm.isGenerating,
@@ -1008,154 +1052,4 @@ async function saveGeneratedStudyTool(
   } catch {
     // The generated message is still useful even if study-tool history fails.
   }
-}
-
-function withGenerationWatchdog(
-  promise: Promise<string>,
-  getGeneratedTokenCount: () => number,
-  watchdog: GenerationWatchdog,
-  onStall: () => void
-): Promise<string> {
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    let lastProgressAt = startedAt;
-    let lastTokenCount = 0;
-    let didFinish = false;
-    const finish = (value: string) => {
-      if (didFinish) {
-        return;
-      }
-
-      didFinish = true;
-      clearInterval(progressTimer);
-      resolve(value);
-    };
-    const progressTimer = setInterval(() => {
-      let tokenCount = lastTokenCount;
-
-      try {
-        tokenCount = getGeneratedTokenCount();
-      } catch {
-        // Native progress can be briefly unavailable while generation starts.
-      }
-
-      if (tokenCount > lastTokenCount) {
-        lastTokenCount = tokenCount;
-        lastProgressAt = Date.now();
-      }
-
-      const now = Date.now();
-      const allowedIdleMs = lastTokenCount > 0
-        ? watchdog.idleMs
-        : watchdog.firstTokenMs;
-      const hasStalled = now - lastProgressAt >= allowedIdleMs;
-      const exceededSafetyLimit = now - startedAt >= watchdog.maximumMs;
-
-      if (hasStalled || exceededSafetyLimit) {
-        onStall();
-        finish('');
-      }
-    }, 500);
-
-    promise
-      .then(finish)
-      .catch(() => finish(''));
-  });
-}
-
-function buildRecoveryMessages(messages: Message[]) {
-  return messages.map((message, index) => {
-    if (index !== messages.length - 1 || message.role !== 'user') {
-      return message;
-    }
-
-    return {
-      ...message,
-      content: [
-        message.content,
-        'Your previous attempt was empty or unusable. Answer the student’s exact question now.',
-        'Return only the final direct answer. Use one to three concise sentences for a simple question.',
-        'Do not mention sources, lesson context, PDFs, retrieval, or this retry instruction.',
-      ].join('\n\n'),
-    };
-  });
-}
-
-function isUsableGeneratedAnswer(answer: string) {
-  const normalized = answer.toLowerCase().trim();
-
-  return (
-    normalized.length >= 12 &&
-    !normalized.includes('could not generate') &&
-    !normalized.includes('unable to generate') &&
-    !normalized.includes('as an ai') &&
-    !normalized.includes('student question:')
-  );
-}
-
-function isUsableGroundedAnswer(answer: string) {
-  return isUsableGeneratedAnswer(answer) && !isBadGroundedAnswer(answer);
-}
-
-function delay(milliseconds: number) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function buildSummaryRetrievalQuery(question: string, conversationContext?: string) {
-  return [conversationContext, question]
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-}
-
-function buildGroundedRetrievalQuery(
-  question: string,
-  conversationContext?: string,
-  alwaysIncludeContext = false
-) {
-  if (!alwaysIncludeContext && !isFollowUpQuestion(question)) {
-    return question.trim();
-  }
-
-  const recentStudentContext = (conversationContext ?? '')
-    .split('\n')
-    .filter((line) => /^Student\b/i.test(line))
-    .slice(-2)
-    .join('\n')
-    .slice(-500);
-
-  return [recentStudentContext, question]
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-}
-
-function isFollowUpQuestion(question: string) {
-  const normalized = question
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
-
-  return (
-    wordCount <= 12 &&
-    /\b(it|its|this|that|these|those|they|them|more|again|continue|previous|above)\b/i.test(
-      normalized
-    )
-  );
-}
-
-function getStudyToolVariant(conversationContext?: string) {
-  if (!conversationContext) {
-    return 0;
-  }
-
-  let hash = 0;
-
-  for (let index = 0; index < conversationContext.length; index += 1) {
-    hash = (hash * 31 + conversationContext.charCodeAt(index)) >>> 0;
-  }
-
-  return hash;
 }

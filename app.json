@@ -32,6 +32,7 @@
     },
     "plugins": [
       "expo-router",
+      "./plugins/withAndroidNoBackup",
       [
         "expo-splash-screen",
         {
@@ -62,7 +63,7 @@
         {
           "enforceContrast": false,
           "hidden": false,
-          "style": "dark"
+          "style": "light"
         }
       ],
       [
@@ -87,7 +88,7 @@
       },
       "expo-navigation-bar": {
         "enforceContrast": false,
-        "style": "dark",
+        "style": "light",
         "hidden": false
       },
       "eas": {

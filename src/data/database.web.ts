@@ -177,6 +177,16 @@ export type SourceChunk = {
   createdAt: string;
 };
 
+export type SourcePage = {
+  id: string;
+  sourceId: string;
+  bookId: string;
+  sourceName: string;
+  pageNumber: number;
+  text: string;
+  createdAt: string;
+};
+
 export type EmbeddedSourceChunk = SourceChunk & {
   embeddingModelName: string | null;
   embedding: number[] | null;
@@ -319,6 +329,20 @@ function mapChunk(state: WebDatabaseState, chunk: StoredSourceChunk): SourceChun
     text: chunk.text,
     tokenEstimate: chunk.tokenEstimate,
     createdAt: chunk.createdAt,
+  };
+}
+
+function mapPage(state: WebDatabaseState, page: StoredSourcePage): SourcePage {
+  const source = state.sources.find((item) => item.id === page.sourceId);
+
+  return {
+    id: String(page.id),
+    sourceId: String(page.sourceId),
+    bookId: String(page.bookId),
+    sourceName: source?.filename ?? 'Source',
+    pageNumber: page.pageNumber,
+    text: page.text,
+    createdAt: page.createdAt,
   };
 }
 
@@ -1323,6 +1347,27 @@ export async function listSourceChunksByBook(
     .sort((a, b) => a.sourceId - b.sourceId || a.chunkIndex - b.chunkIndex)
     .slice(0, limit)
     .map((chunk) => mapChunk(state, chunk));
+}
+
+export async function listSourcePagesByBook(
+  bookId: string,
+  limit = 24
+): Promise<SourcePage[]> {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return [];
+  }
+
+  const state = readState();
+
+  return state.pages
+    .filter((page) => page.bookId === numericId)
+    .sort((a, b) => a.sourceId - b.sourceId || a.pageNumber - b.pageNumber)
+    .slice(0, limit)
+    .map((page) => mapPage(state, page));
 }
 
 export async function searchChunksByText(

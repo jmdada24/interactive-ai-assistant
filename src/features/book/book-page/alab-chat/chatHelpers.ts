@@ -102,6 +102,10 @@ export function formatAiStatus(offlineAi: OfflineAi) {
     return 'The study helper could not start on this device.';
   }
 
+  if (offlineAi.isAnswerHelperPrepared && !offlineAi.isModelReady) {
+    return 'Ready to study from your sources.';
+  }
+
   if (!offlineAi.isModelReady) {
     const progress = Math.round(offlineAi.llmDownloadProgress * 100);
     return `The study helper is getting ready${progress > 0 ? ` (${progress}%)` : ''}.`;

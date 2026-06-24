@@ -42,7 +42,10 @@ export function buildQuizFacts(
   snippets: string[],
   targetCount: number
 ) {
-  const selectedFacts = uniqueFacts(facts).slice(0, targetCount);
+  const selectedFacts = uniqueFacts(facts)
+    .filter((fact) => fact.kind !== 'statement')
+    .filter(isTeacherQuizFact)
+    .slice(0, targetCount);
 
   if (selectedFacts.length >= targetCount) {
     return selectedFacts;
@@ -51,13 +54,24 @@ export function buildQuizFacts(
   const extraFacts = uniqueFacts([
     ...selectedFacts,
     ...buildFactsFromSnippets(snippets),
-  ]).slice(0, targetCount);
+  ])
+    .filter((fact) => fact.kind !== 'statement')
+    .filter(isTeacherQuizFact)
+    .slice(0, targetCount);
 
   if (extraFacts.length >= targetCount) {
     return extraFacts;
   }
 
   return extraFacts;
+}
+
+export function buildFlashcardFacts(
+  facts: LessonFact[],
+  snippets: string[],
+  targetCount: number
+) {
+  return buildQuizFacts(facts, snippets, targetCount);
 }
 
 export function uniqueFacts(facts: LessonFact[]) {
@@ -94,18 +108,38 @@ export function normalizeOption(value: string) {
 }
 
 function extractLessonFacts(chunks: { text: string }[]): LessonFact[] {
+  const markdownFacts = chunks
+    .flatMap((chunk) => extractMarkdownFacts(chunk.text));
+  const glossaryFacts = chunks
+    .flatMap((chunk) => extractGlossaryRowFacts(chunk.text));
   const facts = chunks
     .flatMap((chunk) => getLessonFactCandidates(chunk.text))
     .map(parseLessonFact)
     .filter((fact): fact is LessonFact => Boolean(fact));
 
-  return uniqueFacts(facts);
+  return uniqueFacts([
+    ...markdownFacts,
+    ...glossaryFacts,
+    ...facts,
+  ]);
 }
 
 function buildFactsFromSnippets(snippets: string[]): LessonFact[] {
+  const markdownFacts = uniqueTexts(snippets)
+    .flatMap(extractMarkdownFacts);
+  const glossaryFacts = uniqueTexts(snippets)
+    .flatMap(extractGlossaryRowFacts);
   const definitionFacts = uniqueTexts(snippets)
     .map(parseLessonFactFromDefinition)
     .filter((fact): fact is LessonFact => Boolean(fact));
+
+  if (markdownFacts.length > 0) {
+    return uniqueFacts(markdownFacts);
+  }
+
+  if (glossaryFacts.length > 0) {
+    return uniqueFacts(glossaryFacts);
+  }
 
   if (definitionFacts.length > 0) {
     return definitionFacts;
@@ -120,6 +154,80 @@ function buildFactsFromSnippets(snippets: string[]): LessonFact[] {
       sourceText: snippet,
       kind: 'statement' as const,
     }));
+}
+
+function extractMarkdownFacts(text: string): LessonFact[] {
+  const lines = text
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const facts: LessonFact[] = [];
+
+  for (const line of lines) {
+    const cleanLine = line
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/^\d+[.)]\s+/, '')
+      .replace(/^[-*]\s+/, '')
+      .trim();
+    const boldFact =
+      /^\*\*([^*]{2,60})\*\*\s*(?::|-|\u2013|\u2014)?\s+(.{12,260})$/i.exec(cleanLine) ??
+      /^\*\*([^*]{2,60})\*\*\s+(is|are|means|refers to|describes|consists of|receives|processes|stores|outputs|shows|uses|tells|holds|represents)\s+(.{8,240})$/i.exec(cleanLine);
+
+    if (!boldFact) {
+      continue;
+    }
+
+    const term = cleanStudyTerm(boldFact[1]);
+    const rawDetail = boldFact.length >= 4
+      ? `${boldFact[2]} ${boldFact[3]}`
+      : boldFact[2];
+    const detail = cleanStudyDetail(rawDetail, term);
+
+    if (
+      isUsefulTerm(term) &&
+      isUsefulSentence(detail) &&
+      isAnswerableFact(term, detail)
+    ) {
+      facts.push({
+        term,
+        detail,
+        sourceText: cleanLine,
+        kind: 'term',
+      });
+    }
+  }
+
+  return uniqueFacts(facts);
+}
+
+function extractGlossaryRowFacts(text: string): LessonFact[] {
+  const cleanText = cleanChunkText(text)
+    .replace(/\bterm\s+definition\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const rowPattern = /\b([A-Z][A-Za-z0-9 /()+#.-]{1,35}?)\s+((?:an?|the|one|words?|people|places?|events?|numbers?|shapes?|forces?|energy|matter|living|nonliving|process|system|method|rule|value|amount|part|type|kind)\b[^.?!]{12,220}[.?!])/gi;
+  const facts: LessonFact[] = [];
+
+  for (const match of cleanText.matchAll(rowPattern)) {
+    const term = cleanStudyTerm(match[1]);
+    const detail = cleanStudyDetail(match[2], term);
+
+    if (
+      isUsefulTerm(term) &&
+      isUsefulSentence(detail) &&
+      isAnswerableFact(term, detail)
+    ) {
+      facts.push({
+        term,
+        detail,
+        sourceText: `${term} ${match[2]}`.trim(),
+        kind: 'term',
+      });
+    }
+  }
+
+  return uniqueFacts(facts);
 }
 
 function buildEmergencyFactsFromChunks(chunks: { text: string }[]): LessonFact[] {
@@ -242,6 +350,8 @@ function parseLessonFactFromDefinition(sentence: string): LessonFact | null {
   }
 
   const definitionPatterns = [
+    /\b(?:a|an|the)\s+([A-Za-z][A-Za-z0-9 /()+#.-]{1,35})\s+(is|are|means|refers to|describes|consists of|is used for|is used to|are used for|are used to)\s+(.+)$/i,
+    /\b(?:a|an|the)\s+([A-Za-z][A-Za-z0-9 /()+#.-]{1,35})\s+(compares|lets|allows|helps|stores|holds|tells|gives|uses|runs|repeats|controls|contains|represents|shows|changes|causes|produces|measures|explains)\s+(.+)$/i,
     /\b([A-Z][A-Za-z0-9 /()+#.-]{2,45})\s+(is|are|means|refers to|describes|uses|is used for|is used to|are used for|are used to)\s+(.+)$/i,
     /\b([A-Z][A-Za-z0-9 /()+#.-]{2,45})(?:\s+-\s+|\s*[:\u2013\u2014]\s+)(.+)$/i,
   ];
@@ -284,6 +394,7 @@ function cleanStudyDetail(detail: string, term: string) {
 
 function normalizeStudyTermPhrase(term: string) {
   let cleanTerm = term
+    .replace(/^(?:what|which|who|where|when|why|how)\s+(?:is|are|does|do|can|could|would|should)\s+(?:the|a|an)?\s*/i, '')
     .replace(/^(the|a|an|n)\s+/i, '')
     .replace(/^(?:concept|idea|meaning|definition)\s+of\s+(?:the|a|an)?\s*/i, '')
     .replace(/^(?:term|word|phrase)\s+(?:for|called|named)\s+(?:the|a|an)?\s*/i, '')
@@ -355,15 +466,19 @@ function stripLeadingArticleFragment(value: string) {
 }
 
 function isUsefulTerm(term: string) {
-  const normalized = term.toLowerCase();
+  const normalized = normalizeOption(term);
+  const words = normalized.split(/\s+/).filter(Boolean);
 
   return (
     term.length >= 3 &&
     term.length <= 45 &&
-    normalized.split(/\s+/).length <= 5 &&
+    words.length <= 5 &&
+    hasMeaningfulTermWord(words) &&
+    !looksLikeHeadingPhrase(words) &&
+    !looksLikeVerbPhraseTerm(words) &&
     !term.includes(',') &&
     !term.includes('?') &&
-    !/^(this|that|these|those|they|them|their|it|its|you|your|we|our|what|which|who|when|where|why|how)\b/i.test(term) &&
+    !/^(this|that|these|those|they|them|their|it|its|you|your|we|our|what|which|who|when|where|why|how|and|or|but|so|because|if|when|while|with|to|of|in|on|for|from)\b/i.test(term) &&
     !/\b(is|are|means|refers|called|enough|erased|first|level|pages|designed|absolute|beginner|everywhere|today)\b/i.test(term) &&
     !normalized.includes('question') &&
     !normalized.includes('answer') &&
@@ -375,6 +490,29 @@ function isUsefulTerm(term: string) {
     !genericStudyTerms.has(normalized) &&
     !/^\d+$/.test(normalized)
   );
+}
+
+function looksLikeHeadingPhrase(words: string[]) {
+  return (
+    words.length >= 2 &&
+    words.every((word) => headingPhraseWords.has(word))
+  );
+}
+
+function looksLikeVerbPhraseTerm(words: string[]) {
+  return words.length > 1 && words.some((word) => termVerbWords.has(word));
+}
+
+function isTeacherQuizFact(fact: LessonFact) {
+  return (
+    fact.kind !== 'statement' &&
+    isUsefulTerm(fact.term) &&
+    isAnswerableFact(fact.term, fact.detail)
+  );
+}
+
+function hasMeaningfulTermWord(words: string[]) {
+  return words.some((word) => word.length > 2 && !weakTermWords.has(word));
 }
 
 function isAnswerableFact(term: string, detail: string) {
@@ -444,17 +582,86 @@ const genericStudyTerms = new Set([
   'edition',
   'example',
   'fun fact',
-  'hardware',
   'lesson',
   'module',
   'page',
   'paragraph',
   'question',
   'section',
-  'software',
-  'software hardware',
   'system',
   'this mistake',
   'this',
   'topic',
+]);
+
+const weakTermWords = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'but',
+  'by',
+  'can',
+  'concept',
+  'do',
+  'does',
+  'every',
+  'for',
+  'from',
+  'has',
+  'have',
+  'if',
+  'in',
+  'is',
+  'it',
+  'its',
+  'just',
+  'less',
+  'like',
+  'nothing',
+  'of',
+  'on',
+  'one',
+  'or',
+  'so',
+  'that',
+  'the',
+  'this',
+  'to',
+  'was',
+  'were',
+  'with',
+]);
+
+const headingPhraseWords = new Set([
+  ...weakTermWords,
+  'action',
+  'actions',
+  'analyzing',
+  'following',
+  'making',
+  'repeating',
+  'sorting',
+  'understand',
+  'using',
+]);
+
+const termVerbWords = new Set([
+  'allows',
+  'compares',
+  'contains',
+  'controls',
+  'gives',
+  'helps',
+  'holds',
+  'lets',
+  'represents',
+  'repeats',
+  'runs',
+  'stores',
+  'tells',
+  'uses',
 ]);

@@ -1,15 +1,15 @@
 import { cleanStudentReadableText } from '../../../../ai/textCleanup';
+export type { Flashcard } from '../../../../ai/rag/agent/flashcards';
+export {
+  parseExactFlashcardDeck,
+  parseFlashcards,
+} from '../../../../ai/rag/agent/flashcards';
 
 export type QuizQuestion = {
   question: string;
   options: string[];
   answer: string;
   explanation?: string;
-};
-
-export type Flashcard = {
-  front: string;
-  back: string;
 };
 
 export function parseQuizQuestions(text: string): QuizQuestion[] {
@@ -74,32 +74,6 @@ export function parseQuizQuestions(text: string): QuizQuestion[] {
   }
 
   return parseLooseQuizQuestions(text);
-}
-
-export function parseFlashcards(text: string): Flashcard[] {
-  const lines = text
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const cards: Flashcard[] = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const frontLine = lines[index];
-    const backLine = lines[index + 1];
-
-    if (/^front\s*:/i.test(frontLine) && /^back\s*:/i.test(backLine ?? '')) {
-      const front = cleanFlashcardFrontText(frontLine.replace(/^front\s*:/i, ''));
-      const back = cleanFlashcardBackText(backLine.replace(/^back\s*:/i, ''));
-
-      if (isUsefulFlashcard(front, back)) {
-        cards.push({ front, back });
-      }
-      index += 1;
-    }
-  }
-
-  return cards;
 }
 
 export function shuffleItems<T>(items: T[]) {
@@ -202,6 +176,7 @@ function normalizeQuizOptions(options: string[]) {
     if (
       !key ||
       seen.has(key) ||
+      !isUsefulQuizOption(cleanOption) ||
       uniqueOptions.some((existingOption) =>
         areQuizOptionsTooSimilar(existingOption, cleanOption)
       )
@@ -237,6 +212,39 @@ function cleanQuizOptionText(text: string) {
       normalizeQuizOptionKey(word) !== normalizeQuizOptionKey(words[index - 1])
     )
     .join(' ');
+}
+
+function isUsefulQuizOption(option: string) {
+  if (/[?]/.test(option) || /\b(others?|printing|understand)\b/i.test(option) || /\.\s+[a-z]/.test(option)) {
+    return false;
+  }
+
+  const normalized = normalizeQuizOptionKey(option);
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  const isTermChoice = (
+    option.length >= 3 &&
+    option.length <= 90 &&
+    words.length >= 1 &&
+    words.length <= 9 &&
+    words.some((word) => word.length > 2 && !weakQuizOptionWords.has(word)) &&
+    !looksLikeStudyHeadingPhrase(words) &&
+    !looksLikeVerbPhraseTerm(words) &&
+    !/[.!？]/.test(option) &&
+    !option.includes(',') &&
+    !/^(and|or|but|so|because|if|when|while|with|to|of|in|on|for|from)\b/i.test(option) &&
+    !/\b(is|are|was|were|means|refers|called)\b/i.test(option)
+  );
+  const isStatementChoice = (
+    option.length >= 24 &&
+    option.length <= 180 &&
+    words.length >= 4 &&
+    words.length <= 28 &&
+    words.some((word) => word.length > 3 && !weakQuizOptionWords.has(word)) &&
+    !/^(and|or|but|so|because|if|when|while|with|to|of|in|on|for|from)\b/i.test(option)
+  );
+
+  return isTermChoice || isStatementChoice;
 }
 
 function collapseRepeatedArticleOptionText(text: string) {
@@ -355,31 +363,17 @@ function parseLooseOptions(optionArea: string) {
     }
   }
 
-  return ['A', 'B', 'C', 'D']
-    .map((letter) => optionsByLetter.get(letter) ?? '')
-    .filter(Boolean);
+  return normalizeQuizOptions(
+    ['A', 'B', 'C', 'D']
+      .map((letter) => optionsByLetter.get(letter) ?? '')
+      .filter(Boolean)
+  );
 }
 
 function findFirstIndex(text: string, pattern: RegExp, startIndex: number) {
   const match = pattern.exec(text.slice(startIndex));
 
   return match ? startIndex + match.index : -1;
-}
-
-function cleanFlashcardFrontText(text: string) {
-  return cleanMarkdownText(text)
-    .replace(/^[-*\d.)\s]+/, '')
-    .replace(/^\W+|\W+$/g, '')
-    .replace(/^(the|a|an)\s+/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function cleanFlashcardBackText(text: string) {
-  return cleanMarkdownText(text)
-    .replace(/^[-*\d.)\s]+/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function hasMeaningfullyDistinctOptions(options: string[]) {
@@ -440,120 +434,15 @@ function getMeaningfulOptionTokens(value: string) {
     .filter((token) => token.length > 2 && !quizOptionStopWords.has(token));
 }
 
-function isUsefulFlashcard(front: string, back: string) {
-  const normalizedFront = normalizeQuizOptionKey(front);
-  const frontWords = normalizedFront.split(/\s+/).filter(Boolean);
-
+function looksLikeStudyHeadingPhrase(words: string[]) {
   return (
-    front.length >= 3 &&
-    front.length <= 45 &&
-    frontWords.length >= 1 &&
-    frontWords.length <= 7 &&
-    hasMeaningfulFlashcardFrontWord(normalizedFront) &&
-    !isFunctionWordOnlyFlashcardFront(normalizedFront) &&
-    !isInstructionLikeFlashcardFront(normalizedFront) &&
-    !isQuestionLikeText(front) &&
-    !questionTermStarts.has(frontWords[0] ?? '') &&
-    !front.includes(',') &&
-    !/[.!?]$/.test(front) &&
-    (
-      !flashcardFragmentStarts.has(frontWords[0] ?? '') ||
-      isAcceptedLeadingFunctionWordTerm(normalizedFront)
-    ) &&
-    (
-      !weakFlashcardFrontStarts.has(frontWords[0] ?? '') ||
-      isAcceptedLeadingFunctionWordTerm(normalizedFront)
-    ) &&
-    !/\b(is|are|was|were|has|have|had|can|could|should|would|will)\b/i.test(front) &&
-    isUsefulFlashcardBack(front, back)
+    words.length >= 2 &&
+    words.every((word) => studyHeadingWords.has(word))
   );
 }
 
-function hasMeaningfulFlashcardFrontWord(normalizedFront: string) {
-  return normalizedFront
-    .split(/\s+/)
-    .filter(Boolean)
-    .some((word) =>
-      word.length > 2 &&
-      !flashcardFrontStopWords.has(word)
-    );
-}
-
-function isFunctionWordOnlyFlashcardFront(normalizedFront: string) {
-  const words = normalizedFront.split(/\s+/).filter(Boolean);
-
-  return (
-    words.length === 0 ||
-    words.every((word) => flashcardFrontStopWords.has(word))
-  );
-}
-
-function isInstructionLikeFlashcardFront(normalizedFront: string) {
-  return (
-    !isAcceptedLeadingFunctionWordTerm(normalizedFront) &&
-    (
-      /^(answer|choose|circle|complete|consider|draw|explain|fill|find|identify|list|look|make|read|select|solve|try|write)\b/.test(normalizedFront) ||
-      /\b(answer the|choose the|circle the|complete the|fill in|keep (?:the|your)|look at|make up|select the|test your|try making|try to|write down)\b/.test(normalizedFront)
-    )
-  );
-}
-
-function isUsefulFlashcardBack(front: string, back: string) {
-  const cleanBack = back.trim();
-
-  return (
-    cleanBack.length >= 24 &&
-    cleanBack.length <= 260 &&
-    cleanBack.split(/\s+/).filter(Boolean).length >= 4 &&
-    /^[A-Z0-9]/.test(cleanBack) &&
-    !isQuestionLikeText(cleanBack) &&
-    !/^(is|are|was|were|has|have|had|can|could|should|would|will)\b/i.test(cleanBack) &&
-    !looksLikeSentenceContinuation(front, cleanBack) &&
-    !normalizeQuizOptionKey(cleanBack).startsWith('this statement is true')
-  );
-}
-
-function isQuestionLikeText(text: string) {
-  const normalized = normalizeQuizOptionKey(text);
-  const words = normalized.split(/\s+/).filter(Boolean);
-  const firstWord = words[0] ?? '';
-  const secondWord = words[1] ?? '';
-
-  if (!normalized) {
-    return true;
-  }
-
-  if (/[?？]\s*$/.test(text.trim())) {
-    return true;
-  }
-
-  if (!questionTermStarts.has(firstWord)) {
-    return false;
-  }
-
-  if (questionAuxiliaryStarts.has(firstWord)) {
-    return true;
-  }
-
-  return words.length <= 4 || questionAuxiliaryStarts.has(secondWord);
-}
-
-function looksLikeSentenceContinuation(front: string, back: string) {
-  const normalizedFront = normalizeQuizOptionKey(front);
-  const firstFrontWord = normalizedFront.split(/\s+/)[0] ?? '';
-
-  return (
-    (
-      flashcardFragmentStarts.has(firstFrontWord) &&
-      !isAcceptedLeadingFunctionWordTerm(normalizedFront)
-    ) ||
-    back.length === 0 ||
-    /^[a-z]/.test(back.trim())
-  );
-}
-
-function isAcceptedLeadingFunctionWordTerm(normalizedFront: string) {
-  return /^(if statement|if clause|for loop|for statement|while loop|while statement|with statement|in operator)$/.test(normalizedFront);
+function looksLikeVerbPhraseTerm(words: string[]) {
+  return words.length > 1 && words.some((word) => studyTermVerbWords.has(word));
 }
 
 function getSourceLabel(source: unknown): string {
@@ -655,217 +544,64 @@ const quizOptionStopWords = new Set([
   'with',
 ]);
 
-const flashcardFrontStopWords = new Set([
-  'a',
-  'about',
-  'above',
-  'after',
-  'again',
-  'all',
-  'also',
+const weakQuizOptionWords = new Set([
+  ...quizOptionStopWords,
   'an',
-  'and',
-  'any',
   'are',
-  'as',
-  'at',
-  'be',
-  'because',
-  'been',
-  'before',
-  'being',
-  'below',
-  'between',
-  'both',
   'but',
-  'by',
   'can',
-  'could',
-  'did',
+  'concept',
   'do',
   'does',
-  'during',
-  'each',
-  'few',
-  'for',
-  'from',
-  'had',
+  'every',
   'has',
   'have',
-  'he',
-  'her',
-  'here',
-  'him',
-  'his',
-  'how',
-  'i',
   'if',
-  'in',
-  'into',
   'is',
   'it',
   'its',
-  'many',
-  'may',
-  'more',
-  'most',
-  'much',
-  'must',
-  'my',
-  'next',
-  'no',
-  'not',
-  'now',
+  'just',
+  'less',
+  'like',
+  'nothing',
   'of',
-  'on',
-  'only',
+  'one',
   'or',
-  'other',
-  'our',
-  'over',
-  'own',
-  'same',
-  'several',
-  'she',
-  'should',
+  'others',
   'so',
-  'some',
-  'something',
-  'such',
-  'than',
-  'that',
-  'the',
-  'their',
-  'them',
-  'then',
-  'there',
-  'these',
-  'they',
-  'this',
-  'those',
-  'through',
   'to',
-  'too',
-  'under',
-  'until',
-  'up',
-  'us',
-  'very',
-  'was',
-  'we',
-  'were',
-  'what',
-  'when',
-  'where',
-  'which',
-  'while',
-  'who',
-  'why',
-  'will',
-  'with',
-  'would',
-  'you',
-  'your',
-]);
-
-const weakFlashcardFrontStarts = new Set([
-  ...flashcardFrontStopWords,
-  'activity',
-  'answer',
-  'example',
-  'exercise',
-  'information',
-  'lesson',
-  'page',
-  'question',
-  'sentence',
-  'statement',
-  'text',
-  'worksheet',
-]);
-
-const questionTermStarts = new Set([
-  'am',
-  'are',
-  'can',
-  'could',
-  'did',
-  'do',
-  'does',
-  'had',
-  'has',
-  'have',
-  'how',
-  'is',
-  'should',
-  'what',
-  'when',
-  'where',
-  'which',
-  'who',
-  'why',
-  'will',
-  'would',
-]);
-
-const questionAuxiliaryStarts = new Set([
-  'am',
-  'are',
-  'can',
-  'could',
-  'did',
-  'do',
-  'does',
-  'had',
-  'has',
-  'have',
-  'is',
-  'should',
   'was',
   'were',
-  'will',
-  'would',
 ]);
 
-const flashcardFragmentStarts = new Set([
-  'also',
-  'although',
-  'and',
-  'as',
-  'after',
-  'at',
-  'before',
-  'because',
-  'but',
-  'by',
-  'during',
-  'for',
-  'from',
-  'in',
-  'if',
-  'it',
-  'its',
-  'of',
-  'on',
-  'or',
-  'over',
-  'since',
-  'so',
-  'that',
-  'then',
-  'there',
-  'these',
-  'they',
-  'this',
-  'though',
-  'through',
-  'to',
-  'under',
+const studyHeadingWords = new Set([
+  ...weakQuizOptionWords,
+  'action',
+  'actions',
+  'analyzing',
+  'following',
+  'making',
+  'repeating',
+  'sorting',
+  'understand',
   'using',
-  'when',
-  'where',
-  'while',
-  'with',
+]);
+
+const studyTermVerbWords = new Set([
+  'allows',
+  'compares',
+  'contains',
+  'controls',
+  'gives',
+  'helps',
+  'holds',
+  'lets',
+  'represents',
+  'repeats',
+  'runs',
+  'stores',
+  'tells',
+  'uses',
 ]);
 
 function mergeQuizLines(lines: string[]) {

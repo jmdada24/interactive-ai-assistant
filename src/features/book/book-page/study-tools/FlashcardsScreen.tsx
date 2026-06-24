@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
+import { parseRecoverableFlashcardDeck } from '../../../../ai/rag/agent/flashcards';
+import type { Flashcard } from '../../../../ai/rag/agent/flashcards';
 import { AppHeader } from '../../../../components/layout/AppHeader';
 import { Screen } from '../../../../components/layout/Screen';
 import { Book } from '../../../../types/Book';
-import {
-  Flashcard,
-  parseFlashcards,
-} from '../alab-chat/studyToolUtils';
 import { OfflineAi } from '../types';
+import { FlashcardReviewCard } from './FlashcardReviewCard';
 import { styles } from './styles';
+
+const flashcardCount = 10;
 
 export function FlashcardsScreen({
   book,
@@ -20,9 +21,9 @@ export function FlashcardsScreen({
   onBack: () => void | Promise<void>;
 }) {
   const didGenerateInitialCards = useRef(false);
+  const generationCountRef = useRef(0);
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [isFlipped, setIsFlipped] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isWaitingForHelper, setIsWaitingForHelper] = useState(false);
   const [statusText, setStatusText] = useState('Preparing flashcards...');
@@ -32,26 +33,37 @@ export function FlashcardsScreen({
     setStatusText(`Preparing flashcards from ${book.title}...`);
 
     try {
-      const answer = await offlineAi.generateStudyTool('flashcards', 'mcq', 20);
-      const parsedCards = parseFlashcards(answer.text).slice(0, 20);
+      generationCountRef.current += 1;
+      const answer = await offlineAi.generateStudyTool(
+        'flashcards',
+        'mcq',
+        flashcardCount,
+        `Flashcard set ${generationCountRef.current}`
+      );
+      const parsedCards = parseRecoverableFlashcardDeck(answer.text, flashcardCount);
 
-      if (answer.answerMode !== 'study_tool' || parsedCards.length === 0) {
-        setCards([]);
-        setStatusText(answer.text || 'ALAB could not make flashcards from this lesson yet.');
+      if (parsedCards.length === 0) {
+        setStatusText(getFlashcardGenerationFailureText(flashcardCount));
         return;
       }
 
       setCards(parsedCards);
       setActiveIndex(0);
-      setIsFlipped(false);
-      setStatusText(`Flashcards ready: ${parsedCards.length} cards`);
+      setStatusText(
+        parsedCards.length === flashcardCount
+          ? `Flashcards ready: ${parsedCards.length} cards`
+          : getShortFlashcardReadyText(parsedCards.length, flashcardCount)
+      );
     } catch {
-      setCards([]);
-      setStatusText('Something went wrong while preparing flashcards. Please try again.');
+      setStatusText(
+        cards.length > 0
+          ? 'Something went wrong while preparing flashcards. Your last valid cards are still here.'
+          : 'Something went wrong while preparing flashcards. Please generate again.'
+      );
     } finally {
       setIsGenerating(false);
     }
-  }, [book.title, offlineAi]);
+  }, [book.title, cards.length, offlineAi]);
 
   const generateFlashcards = useCallback(() => {
     if (isGenerating || isWaitingForHelper) {
@@ -92,12 +104,6 @@ export function FlashcardsScreen({
   }, [isWaitingForHelper, offlineAi.isModelReady, runFlashcardsGeneration]);
 
   const activeCard = cards[activeIndex];
-  const activeCardText = activeCard
-    ? isFlipped
-      ? activeCard.back
-      : activeCard.front
-    : '';
-  const isLongCardText = activeCardText.length > 150;
 
   return (
     <Screen style={styles.toolScreen}>
@@ -145,45 +151,17 @@ export function FlashcardsScreen({
               <Text style={styles.flashcardHint}>Tap the card to flip</Text>
             </View>
 
-            <Pressable
-              onPress={() => setIsFlipped((current) => !current)}
-              style={({ pressed }) => [
-                styles.flashcardReviewCard,
-                isFlipped && styles.flippedFlashcardReviewCard,
-                pressed && styles.pressedScale,
-              ]}
-            >
-              <Text style={styles.flashcardFaceLabel}>
-                {isFlipped ? 'BACK' : 'FRONT'}
-              </Text>
-              <View style={styles.flashcardReviewBody}>
-                <ScrollView
-                  nestedScrollEnabled
-                  style={styles.flashcardReviewScroller}
-                  contentContainerStyle={styles.flashcardReviewScrollerContent}
-                  showsVerticalScrollIndicator={false}
-                >
-                  <Text
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.75}
-                    style={[
-                      styles.flashcardReviewText,
-                      isFlipped && styles.flashcardBackReviewText,
-                      isLongCardText && styles.flashcardLongReviewText,
-                    ]}
-                  >
-                    {activeCardText}
-                  </Text>
-                </ScrollView>
-              </View>
-            </Pressable>
+            <FlashcardReviewCard
+              card={activeCard}
+              activeIndex={activeIndex}
+              totalCards={cards.length}
+            />
 
             <View style={styles.quizNavigation}>
               <Pressable
                 disabled={activeIndex === 0}
                 onPress={() => {
                   setActiveIndex((current) => Math.max(0, current - 1));
-                  setIsFlipped(false);
                 }}
                 style={({ pressed }) => [
                   styles.quizActionSecondary,
@@ -198,7 +176,6 @@ export function FlashcardsScreen({
                 disabled={activeIndex === cards.length - 1}
                 onPress={() => {
                   setActiveIndex((current) => Math.min(cards.length - 1, current + 1));
-                  setIsFlipped(false);
                 }}
                 style={({ pressed }) => [
                   styles.quizActionPrimary,
@@ -214,4 +191,12 @@ export function FlashcardsScreen({
       </ScrollView>
     </Screen>
   );
+}
+
+function getFlashcardGenerationFailureText(expectedCount: number) {
+  return `ALAB could not find enough clear review points for ${expectedCount} cards yet. Try adding a longer lesson or clearer source.`;
+}
+
+function getShortFlashcardReadyText(actualCount: number, requestedCount: number) {
+  return `Flashcards ready: ${actualCount} cards. I made fewer than ${requestedCount} because this lesson only has ${actualCount} clear review points so far.`;
 }

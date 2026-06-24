@@ -1,5 +1,7 @@
 import { shortText } from '../chunks/text';
+import { isValidFlashcardPair } from './flashcards';
 import {
+  buildFlashcardFacts,
   buildQuizFacts,
   buildStudyFacts,
   cleanStudyTerm,
@@ -9,10 +11,10 @@ import {
 
 export type StudyToolMode = 'mcq' | 'fill_blank' | 'essay';
 
-type QuizQuestionStyle = 'meaning' | 'term' | 'direct';
+type QuizQuestionStyle = 'meaning' | 'term' | 'definition' | 'direct';
 
 const quizItemCount = 10;
-const flashcardItemCount = 20;
+const flashcardItemCount = 10;
 const meaningQuestionRatio = 0.25;
 
 export function buildSimpleStudyToolFallback(
@@ -24,12 +26,16 @@ export function buildSimpleStudyToolFallback(
 ) {
   const { baseSnippets, facts } = buildStudyFacts(chunks);
   const targetCount = getStudyToolItemCount(tool, itemCount);
+  const quizFactPoolCount = Math.max(targetCount, targetCount * 3);
   const quizFacts = tool === 'quiz'
-    ? buildQuizFacts(facts, baseSnippets, targetCount)
+    ? buildQuizFacts(facts, baseSnippets, quizFactPoolCount)
+    : [];
+  const flashcardFacts = tool === 'flashcards'
+    ? buildFlashcardFacts(facts, baseSnippets, targetCount)
     : [];
   const selectedFacts = tool === 'quiz'
-    ? repeatToCount(quizFacts, targetCount)
-    : repeatToCount(facts, targetCount);
+    ? takeUniqueQuizFacts(quizFacts, Math.max(targetCount, targetCount * 3))
+    : flashcardFacts.slice(0, targetCount);
   const variedFacts = rotateItems(selectedFacts, variant);
 
   if (variedFacts.length === 0) {
@@ -39,34 +45,21 @@ export function buildSimpleStudyToolFallback(
   }
 
   if (tool === 'flashcards') {
-    return repeatToCount(variedFacts, targetCount)
-      .map((fact) =>
-        [
-          `Front: ${fact.term}`,
-          `Back: ${shortText(fact.detail.replace(/_____+/g, fact.term), 220)}`,
-        ].join('\n')
-      )
-      .join('\n\n');
+    return buildFallbackFlashcards(variedFacts, targetCount);
   }
 
-  const questionStyles = buildQuizQuestionStyles(variedFacts.length, variant);
-  const quizQuestions = variedFacts
-    .map((fact, index) =>
-      buildFallbackQuizQuestion(
-        fact,
-        variedFacts,
-        index + variant,
-        mode,
-        questionStyles[index] ?? 'direct'
-      )
-    )
-    .filter((question): question is string => Boolean(question));
+  const quizQuestions = buildFallbackQuizQuestions(
+    variedFacts,
+    mode,
+    targetCount,
+    variant
+  );
 
   if (quizQuestions.length === 0) {
     return 'ALAB needs clearer lesson definitions before making a quiz.';
   }
 
-  return quizQuestions.join('\n\n');
+  return quizQuestions.slice(0, targetCount).join('\n\n');
 }
 
 export function getStudyToolItemCount(
@@ -132,12 +125,10 @@ export function mergeValidatedStudyToolOutput(
 ) {
   const selected: string[] = [];
   const seenPrompts = new Set<string>();
-  const candidates = [
-    ...splitStudyToolBlocks(primaryText, tool),
-    ...splitStudyToolBlocks(fallbackText, tool),
-  ];
+  const primaryBlocks = splitStudyToolBlocks(primaryText, tool);
+  const fallbackBlocks = splitStudyToolBlocks(fallbackText, tool);
 
-  for (const block of candidates) {
+  for (const block of [...primaryBlocks, ...fallbackBlocks]) {
     if (!isValidStudyToolBlock(tool, mode, block)) {
       continue;
     }
@@ -154,6 +145,50 @@ export function mergeValidatedStudyToolOutput(
 
     if (selected.length >= itemCount) {
       break;
+    }
+  }
+
+  if (selected.length < itemCount) {
+    for (const block of fallbackBlocks) {
+      if (!isValidStudyToolBlock(tool, mode, block)) {
+        continue;
+      }
+
+      const prompt = getStudyToolPrompt(block, tool);
+      const promptKey = normalizeOption(prompt);
+
+      if (!promptKey || seenPrompts.has(promptKey)) {
+        continue;
+      }
+
+      seenPrompts.add(promptKey);
+      selected.push(block.trim());
+
+      if (selected.length >= itemCount) {
+        break;
+      }
+    }
+  }
+
+  if (selected.length < itemCount) {
+    for (const block of [...primaryBlocks, ...fallbackBlocks]) {
+      if (!isValidStudyToolBlock(tool, mode, block)) {
+        continue;
+      }
+
+      const prompt = getStudyToolPrompt(block, tool);
+      const promptKey = normalizeOption(prompt);
+
+      if (!promptKey || seenPrompts.has(promptKey)) {
+        continue;
+      }
+
+      seenPrompts.add(promptKey);
+      selected.push(block.trim());
+
+      if (selected.length >= itemCount) {
+        break;
+      }
     }
   }
 
@@ -195,11 +230,7 @@ function isValidStudyToolBlock(
     const front = block.match(/^Front\s*:\s*(.+)$/im)?.[1]?.trim() ?? '';
     const back = block.match(/^Back\s*:\s*(.+)$/im)?.[1]?.trim() ?? '';
 
-    return Boolean(
-      front &&
-      back &&
-      normalizeOption(front) !== normalizeOption(back)
-    );
+    return isValidFlashcardPair(front, back);
   }
 
   if (mode === 'mcq') {
@@ -261,8 +292,17 @@ function hasValidMcqBlock(block: string) {
   const answerLetter = answerMatch[1].toUpperCase();
   const correctOption = options.get(answerLetter);
   const answerText = answerMatch[2]?.trim() ?? '';
+  const question = block.match(/^Question\s*\d*\s*[:.)-]\s*(.+)$/im)?.[1]?.trim() ?? '';
+  const optionValues = Array.from(options.values());
 
-  if (!correctOption) {
+  if (
+    !isCleanQuizQuestion(question) ||
+    !correctOption ||
+    optionValues.length !== 4 ||
+    optionValues.some((option) => !isStrongQuizChoice(option)) ||
+    optionValues.some((option) => isDirtyQuizText(option)) ||
+    !hasMeaningfullyDistinctQuizOptions(optionValues)
+  ) {
     return false;
   }
 
@@ -277,12 +317,217 @@ function normalizeAnswerText(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function repeatToCount<T>(items: T[], count: number) {
-  if (items.length === 0) {
-    return [];
+function isStrongQuizOption(option: string) {
+  if (/[.!?]/.test(option) || /\b(others?|printing|understand)\b/i.test(option) || isDirtyQuizText(option)) {
+    return false;
   }
 
-  return Array.from({ length: count }, (_, index) => items[index % items.length]);
+  const cleanOption = cleanStudyTerm(option);
+  const normalized = normalizeOption(cleanOption);
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  return (
+    cleanOption.length >= 3 &&
+    cleanOption.length <= 70 &&
+    words.length >= 1 &&
+    words.length <= 7 &&
+    words.some((word) => word.length > 2 && !weakQuizOptionWords.has(word)) &&
+    !/[?？]/.test(cleanOption) &&
+    !cleanOption.includes(',') &&
+    !/^(and|or|but|so|because|if|when|while|with|to|of|in|on|for|from)\b/i.test(cleanOption) &&
+    !/\b(is|are|was|were|means|refers|called)\b/i.test(cleanOption)
+  );
+}
+
+function isStrongQuizChoice(option: string) {
+  return isStrongQuizOption(option) || isStrongStatementOption(option);
+}
+
+function isStrongStatementOption(option: string) {
+  if (
+    /\b(others?|printing|understand)\b/i.test(option) ||
+    /\.\s+[a-z]/.test(option) ||
+    isDirtyQuizText(option)
+  ) {
+    return false;
+  }
+
+  const cleanOption = option
+    .replace(/\s+/g, ' ')
+    .replace(/[.?!]+$/g, '')
+    .trim();
+  const normalized = normalizeOption(cleanOption);
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  return (
+    cleanOption.length >= 24 &&
+    cleanOption.length <= 180 &&
+    words.length >= 4 &&
+    words.length <= 24 &&
+    words.some((word) => word.length > 3 && !weakQuizOptionWords.has(word)) &&
+    !/^(and|or|but|so|because|if|when|while|with|to|of|in|on|for|from)\b/i.test(cleanOption)
+  );
+}
+
+function isCleanQuizQuestion(question: string) {
+  const cleanQuestion = question.replace(/\s+/g, ' ').trim();
+  const normalized = normalizeOption(cleanQuestion);
+
+  if (
+    !cleanQuestion ||
+    cleanQuestion.length > 180 ||
+    /lesson fact/i.test(cleanQuestion) ||
+    isDirtyQuizText(cleanQuestion)
+  ) {
+    return false;
+  }
+
+  const whatIsMatch = /^what is (.+)\?*$/i.exec(cleanQuestion);
+  const definitionMatch = /^which definition best matches (.+)\?*$/i.exec(cleanQuestion);
+  const termSubject = whatIsMatch?.[1] ?? definitionMatch?.[1] ?? '';
+
+  if (termSubject) {
+    const cleanSubject = termSubject.replace(/[?？]+$/g, '').trim();
+    const subjectWords = normalizeOption(cleanSubject).split(/\s+/).filter(Boolean);
+
+    if (
+      subjectWords.length > 5 ||
+      looksLikeDefinitionFragmentTerm(cleanSubject, cleanQuestion) ||
+      subjectWords.some((word) => quizQuestionSubjectBadWords.has(word))
+    ) {
+      return false;
+    }
+  }
+
+  if (/^which term matches this definition:/i.test(cleanQuestion)) {
+    const clue = cleanQuestion.replace(/^which term matches this definition:\s*/i, '');
+
+    return (
+      clue.split(/\s+/).filter(Boolean).length >= 4 &&
+      clue.length <= 140 &&
+      !isDirtyQuizText(clue)
+    );
+  }
+
+  return normalized.length > 0;
+}
+
+function isDirtyQuizText(value: string) {
+  const cleanValue = value.replace(/\s+/g, ' ').trim();
+  const normalized = normalizeOption(cleanValue);
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  return (
+    !normalized ||
+    /\b(?:hardware vs|software vs|input receiving|processing working|storage saving|output showing|term definition)\b/i.test(cleanValue) ||
+    /\b\d+\s*$/.test(cleanValue) ||
+    words.length > 0 && quizDirtyEndWords.has(words[words.length - 1]) ||
+    words.filter((word) => quizTableBleedWords.has(word)).length >= 2 ||
+    /\b(?:input|processing|storage|output)\b.+\b(?:input|processing|storage|output)\b/i.test(cleanValue)
+  );
+}
+
+function hasMeaningfullyDistinctQuizOptions(options: string[]) {
+  const normalizedOptions = options.map(normalizeOption);
+
+  for (let leftIndex = 0; leftIndex < normalizedOptions.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < normalizedOptions.length; rightIndex += 1) {
+      const left = normalizedOptions[leftIndex];
+      const right = normalizedOptions[rightIndex];
+      const shorter = left.length < right.length ? left : right;
+      const longer = left.length < right.length ? right : left;
+
+      if (!left || !right || left === right || (shorter.length >= 10 && longer.includes(shorter))) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function buildFallbackFlashcards(
+  facts: LessonFact[],
+  targetCount: number
+) {
+  const selectedFacts = takeUniqueFlashcardFacts(facts, targetCount);
+
+  return selectedFacts
+    .map((fact, index) => {
+      const baseFront = cleanFlashcardFront(fact.term || fact.sourceText || `Lesson idea ${index + 1}`);
+      const back = buildFlashcardBack(fact);
+
+      return [
+        `Front: ${baseFront}`,
+        `Back: ${back}`,
+      ].join('\n');
+    })
+    .join('\n\n');
+}
+
+function takeUniqueFlashcardFacts(facts: LessonFact[], targetCount: number) {
+  const selected: LessonFact[] = [];
+  const seenTerms = new Set<string>();
+  const seenDetails = new Set<string>();
+
+  for (const fact of facts) {
+    const front = cleanFlashcardFront(fact.term || fact.sourceText);
+    const frontKey = normalizeOption(front);
+    const detailKey = normalizeOption(fact.detail).slice(0, 120);
+
+    if (
+      !frontKey ||
+      seenTerms.has(frontKey) ||
+      (detailKey && seenDetails.has(detailKey))
+    ) {
+      continue;
+    }
+
+    seenTerms.add(frontKey);
+
+    if (detailKey) {
+      seenDetails.add(detailKey);
+    }
+
+    selected.push(fact);
+
+    if (selected.length >= targetCount) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
+function cleanFlashcardFront(value: string) {
+  const cleanValue = cleanStudyTerm(value)
+    .replace(/[,.;:!?]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const words = cleanValue.split(/\s+/).filter(Boolean);
+  const compactValue = words.slice(0, 5).join(' ');
+
+  return shortText(compactValue || 'Lesson Idea', 40)
+    .replace(/[,.;:!?]+$/g, '')
+    .trim();
+}
+
+function buildFlashcardBack(fact: LessonFact) {
+  const cleanDetail = capitalizeFirst(
+    shortText(fact.detail.replace(/_____+/g, fact.term), 200)
+  );
+
+  return cleanDetail;
+}
+
+function capitalizeFirst(value: string) {
+  const cleanValue = value.trim();
+
+  if (!cleanValue) {
+    return 'This card reviews an important lesson idea.';
+  }
+
+  return `${cleanValue.charAt(0).toUpperCase()}${cleanValue.slice(1)}`;
 }
 
 function buildFallbackQuizQuestion(
@@ -290,7 +535,8 @@ function buildFallbackQuizQuestion(
   allFacts: LessonFact[],
   index: number,
   mode: StudyToolMode,
-  questionStyle: QuizQuestionStyle = 'direct'
+  questionStyle: QuizQuestionStyle = 'direct',
+  occurrence = 1
 ) {
   if (mode === 'fill_blank') {
     return [
@@ -309,108 +555,106 @@ function buildFallbackQuizQuestion(
   }
 
   if (fact.kind === 'statement') {
-    return buildStatementQuizQuestion(fact, allFacts, index);
-  }
-
-  const options = buildUniqueOptions(fact, allFacts, index);
-
-  if (options.length < 4) {
-    return buildDetailQuizQuestion(fact, allFacts, index);
-  }
-
-  const correctIndex = options.findIndex(
-    (option) => normalizeOption(option) === normalizeOption(fact.term)
-  );
-  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
-  const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
-
-  return [
-    `Question: ${buildDefinitionQuestion(fact, questionStyle)}`,
-    `A. ${options[0]}`,
-    `B. ${options[1]}`,
-    `C. ${options[2]}`,
-    `D. ${options[3]}`,
-    `Correct answer: ${answerLetter}. ${correctOption}`,
-    `Explanation: ${shortText(fact.detail.replace(/_____+/g, fact.term), 170)}`,
-  ].join('\n');
-}
-
-function buildStatementQuizQuestion(
-  fact: LessonFact,
-  allFacts: LessonFact[],
-  index: number
-) {
-  const options = buildStatementOptions(fact, allFacts, index);
-
-  if (options.length < 4) {
     return null;
   }
 
-  const correctStatement = getFactStatement(fact);
-  const correctIndex = options.findIndex(
-    (option) => normalizeOption(option) === normalizeOption(correctStatement)
-  );
-  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
-  const correctOption = options[Math.max(0, correctIndex)] ?? correctStatement;
+  const asksForTerm = questionStyle === 'meaning' || questionStyle === 'term';
+  const options = asksForTerm
+    ? buildTermOptions(fact, allFacts, index)
+    : buildDefinitionOptions(fact, allFacts, index);
 
-  return [
-    'Question: Which statement is true?',
-    `A. ${options[0]}`,
-    `B. ${options[1]}`,
-    `C. ${options[2]}`,
-    `D. ${options[3]}`,
-    `Correct answer: ${answerLetter}. ${correctOption}`,
-    `Explanation: ${shortText(correctOption, 170)}`,
-  ].join('\n');
-}
+  if (options.length >= 4) {
+    const correctAnswer = asksForTerm
+      ? cleanAnswerOption(fact.term)
+      : cleanDefinitionOption(fact.detail.replace(/_____+/g, fact.term));
+    const correctIndex = options.findIndex(
+      (option) => normalizeOption(option) === normalizeOption(correctAnswer)
+    );
+    const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
+    const correctOption = options[Math.max(0, correctIndex)] ?? correctAnswer;
+    const questionText = asksForTerm
+      ? buildTermAnswerQuestion(fact, questionStyle)
+      : buildDefinitionAnswerQuestion(fact, questionStyle);
 
-function buildDetailQuizQuestion(
-  fact: LessonFact,
-  allFacts: LessonFact[],
-  index: number
-) {
-  const correctStatement = getFactStatement(fact);
-  const distractors = allFacts
-    .filter((item) => normalizeOption(getFactStatement(item)) !== normalizeOption(correctStatement))
-    .map(getFactStatement);
-  const options = uniqueByNormalized([
-    correctStatement,
-    ...rotateItems(distractors, index).slice(0, 3),
-  ]).slice(0, 4);
-
-  if (options.length < 4) {
-    return null;
+    return [
+      `Question: ${buildReviewQuestionText(questionText, occurrence)}`,
+      `A. ${options[0]}`,
+      `B. ${options[1]}`,
+      `C. ${options[2]}`,
+      `D. ${options[3]}`,
+      `Correct answer: ${answerLetter}. ${correctOption}`,
+      `Explanation: ${shortText(fact.detail.replace(/_____+/g, fact.term), 170)}`,
+    ].join('\n');
   }
 
-  const shuffledOptions = rotateItems(options, index).slice(0, 4);
-  const correctIndex = shuffledOptions.findIndex(
-    (option) => normalizeOption(option) === normalizeOption(correctStatement)
-  );
-  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
-  const correctOption = shuffledOptions[Math.max(0, correctIndex)] ?? correctStatement;
-  const prompt = fact.kind === 'statement'
-    ? 'Which statement is true?'
-    : `Which statement best explains ${fact.term}?`;
-
-  return [
-    `Question: ${prompt}`,
-    `A. ${shuffledOptions[0]}`,
-    `B. ${shuffledOptions[1]}`,
-    `C. ${shuffledOptions[2]}`,
-    `D. ${shuffledOptions[3]}`,
-    `Correct answer: ${answerLetter}. ${correctOption}`,
-    `Explanation: ${shortText(correctOption, 170)}`,
-  ].join('\n');
+  return null;
 }
 
-function buildDefinitionQuestion(
+function buildFallbackQuizQuestions(
+  facts: LessonFact[],
+  mode: StudyToolMode,
+  targetCount: number,
+  variant: number
+) {
+  const selectedQuestions: string[] = [];
+  const seenQuestions = new Set<string>();
+  const styles = buildQuizQuestionStyles(facts.length, variant);
+  const rotatedFacts = rotateItems(facts, variant);
+
+  for (let index = 0; index < rotatedFacts.length; index += 1) {
+    const fact = rotatedFacts[index];
+    const question = buildFallbackQuizQuestion(
+      fact,
+      facts,
+      index + variant,
+      mode,
+      styles[index] ?? 'direct',
+      1
+    );
+
+    if (!question || !isValidStudyToolBlock('quiz', mode, question)) {
+      continue;
+    }
+
+    const promptKey = normalizeOption(getStudyToolPrompt(question, 'quiz'));
+
+    if (!promptKey || seenQuestions.has(promptKey)) {
+      continue;
+    }
+
+    seenQuestions.add(promptKey);
+    selectedQuestions.push(question);
+
+    if (selectedQuestions.length >= targetCount) {
+      return selectedQuestions;
+    }
+  }
+
+  return selectedQuestions;
+}
+
+function buildReviewQuestionText(question: string, occurrence: number) {
+  if (occurrence <= 1) {
+    return question;
+  }
+
+  const prefixes = [
+    'Another check:',
+    'Practice check:',
+  ];
+  const prefix = prefixes[(occurrence - 2) % prefixes.length];
+
+  return `${prefix} ${question.replace(/[?？]\s*$/, '?')}`;
+}
+
+function buildTermAnswerQuestion(
   fact: LessonFact,
   questionStyle: QuizQuestionStyle
 ) {
   const clue = cleanQuestionClue(fact.detail.replace(/_____+/g, fact.term));
 
   if (!clue) {
-    return `What is ${fact.term}?`;
+    return `Which term matches this definition: ${formatQuestionEnding(clue)}`;
   }
 
   const calledQuestion = buildCalledTermQuestion(clue, fact.term);
@@ -419,23 +663,32 @@ function buildDefinitionQuestion(
     return calledQuestion;
   }
 
-  if (/^(like|such as|for example)\b/i.test(clue)) {
-    return `Which answer includes ${formatQuestionEnding(clue.replace(/^(like|such as|for example)\b[:,]?\s*/i, ''))}`;
-  }
-
-  if (/^(a|an|the)\b/i.test(clue)) {
-    return `What is ${formatQuestionEnding(clue)}`;
-  }
-
   if (questionStyle === 'meaning') {
-    return `Which answer means ${formatQuestionEnding(clue)}`;
+    return `What is the term for ${formatQuestionEnding(formatTermForClue(clue))}`;
   }
 
-  if (questionStyle === 'term') {
-    return `Which term is described by ${formatQuestionEnding(clue)}`;
+  return `Which term matches this definition: ${formatQuestionEnding(clue)}`;
+}
+
+function buildDefinitionAnswerQuestion(
+  fact: LessonFact,
+  questionStyle: QuizQuestionStyle
+) {
+  if (questionStyle === 'definition') {
+    return `Which definition best matches ${fact.term}?`;
   }
 
-  return `What matches ${formatQuestionEnding(clue)}`;
+  return `What is ${fact.term}?`;
+}
+
+function formatTermForClue(value: string) {
+  const cleanValue = value.trim();
+
+  if (/^(?:compares|describes|lets|allows|helps|stores|holds|tells|gives|uses|runs|repeats|controls|contains|represents)\b/i.test(cleanValue)) {
+    return `something that ${cleanValue}`;
+  }
+
+  return cleanValue;
 }
 
 function buildFillBlankQuestion(fact: LessonFact) {
@@ -458,7 +711,7 @@ function buildCalledTermQuestion(clue: string, term: string) {
   return `What is ${formatQuestionSubject(match[1])} called?`;
 }
 
-function buildUniqueOptions(
+function buildTermOptions(
   fact: LessonFact,
   allFacts: LessonFact[],
   index: number
@@ -467,7 +720,10 @@ function buildUniqueOptions(
     ...allFacts
       .filter((item) => item.kind !== 'statement')
       .map((item) => item.term),
-  ].filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
+  ].filter((term) =>
+    normalizeOption(term) !== normalizeOption(fact.term) &&
+    isStrongQuizOption(term)
+  );
   const uniqueDistractors = uniqueByNormalized(distractors).slice(0, 12);
   const selectedDistractors = rotateItems(uniqueDistractors, index).slice(0, 3);
   const paddedOptions = uniqueByNormalized([
@@ -478,28 +734,22 @@ function buildUniqueOptions(
   return rotateItems(paddedOptions, index).slice(0, 4);
 }
 
-function buildStatementOptions(
+function buildDefinitionOptions(
   fact: LessonFact,
   allFacts: LessonFact[],
   index: number
 ) {
+  const correctDefinition = cleanDefinitionOption(fact.detail.replace(/_____+/g, fact.term));
   const distractors = allFacts
-    .map(getFactStatement)
-    .filter((statement) => normalizeOption(statement) !== normalizeOption(getFactStatement(fact)));
-  const options = uniqueByNormalized([
-    getFactStatement(fact),
+    .filter((item) => item.kind !== 'statement')
+    .map((item) => cleanDefinitionOption(item.detail.replace(/_____+/g, item.term)))
+    .filter((statement) => normalizeOption(statement) !== normalizeOption(correctDefinition));
+  const options = uniqueDefinitionOptionsByNormalized([
+    correctDefinition,
     ...rotateItems(distractors, index).slice(0, 3),
   ]).slice(0, 4);
 
   return rotateItems(options, index).slice(0, 4);
-}
-
-function getFactStatement(fact: LessonFact) {
-  if (fact.kind === 'statement') {
-    return cleanAnswerOption(shortText(fact.term, 150));
-  }
-
-  return cleanAnswerOption(shortText(fact.detail.replace(/_____+/g, fact.term), 150));
 }
 
 function cleanQuestionClue(value: string) {
@@ -514,6 +764,15 @@ function cleanQuestionClue(value: string) {
     .replace(/[.?!]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function cleanDefinitionOption(value: string) {
+  return sentenceCase(
+    shortText(value, 150)
+      .replace(/\s+/g, ' ')
+      .replace(/[.?!]+$/g, '')
+      .trim()
+  );
 }
 
 function formatQuestionEnding(value: string) {
@@ -571,7 +830,17 @@ function buildQuizQuestionStyles(totalQuestions: number, variant: number) {
       return style;
     }
 
-    return (index + variant) % 2 === 0 ? 'term' : 'direct';
+    const pattern = (index + variant) % 4;
+
+    if (pattern === 0) {
+      return 'definition';
+    }
+
+    if (pattern === 1) {
+      return 'term';
+    }
+
+    return 'direct';
   });
 }
 
@@ -613,7 +882,7 @@ function uniqueByNormalized(items: string[]) {
     const cleanItem = cleanAnswerOption(item);
     const key = normalizeOption(cleanItem);
 
-    if (!key || seen.has(key)) {
+    if (!key || seen.has(key) || !isStrongQuizOption(cleanItem)) {
       continue;
     }
 
@@ -623,3 +892,205 @@ function uniqueByNormalized(items: string[]) {
 
   return unique;
 }
+
+function uniqueDefinitionOptionsByNormalized(items: string[]) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const item of items) {
+    const cleanItem = cleanDefinitionOption(item);
+    const key = normalizeOption(cleanItem);
+
+    if (!key || seen.has(key) || !isStrongStatementOption(cleanItem)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(cleanItem);
+  }
+
+  return unique;
+}
+
+function takeUniqueQuizFacts(facts: LessonFact[], targetCount: number) {
+  const selected: LessonFact[] = [];
+  const seenTerms = new Set<string>();
+  const seenDetails = new Set<string>();
+
+  for (const fact of facts) {
+    const term = cleanAnswerOption(fact.term);
+    const detail = cleanDefinitionOption(fact.detail.replace(/_____+/g, fact.term));
+    const termKey = normalizeOption(term);
+    const detailKey = normalizeOption(detail).slice(0, 120);
+
+    if (
+      fact.kind === 'statement' ||
+      !termKey ||
+      !detailKey ||
+      seenTerms.has(termKey) ||
+      seenDetails.has(detailKey) ||
+      !isStrongQuizOption(term) ||
+      !isStrongStatementOption(detail) ||
+      looksLikeDefinitionFragmentTerm(term, detail) ||
+      isDirtyQuizText(term) ||
+      isDirtyQuizText(detail) ||
+      !isValidFlashcardPair(term, detail)
+    ) {
+      continue;
+    }
+
+    seenTerms.add(termKey);
+    seenDetails.add(detailKey);
+    selected.push({
+      ...fact,
+      term,
+      detail,
+    });
+
+    if (selected.length >= targetCount) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
+function looksLikeDefinitionFragmentTerm(term: string, detail: string) {
+  const normalizedTerm = normalizeOption(term);
+  const normalizedDetail = normalizeOption(detail);
+  const termWords = normalizedTerm.split(/\s+/).filter(Boolean);
+  const detailWords = normalizedDetail.split(/\s+/).filter(Boolean);
+
+  if (termWords.length <= 1) {
+    return false;
+  }
+
+  const startsLikeDefinition =
+    quizDefinitionFragmentStarts.has(termWords[0] ?? '') ||
+    termWords.some((word) => quizDefinitionFragmentVerbs.has(word));
+  const termIsDetailPrefix =
+    detailWords.length >= termWords.length &&
+    detailWords.slice(0, termWords.length).join(' ') === normalizedTerm;
+
+  return startsLikeDefinition || termIsDetailPrefix;
+}
+
+const weakQuizOptionWords = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'but',
+  'by',
+  'can',
+  'concept',
+  'do',
+  'does',
+  'every',
+  'for',
+  'from',
+  'has',
+  'have',
+  'if',
+  'in',
+  'is',
+  'it',
+  'its',
+  'just',
+  'less',
+  'like',
+  'nothing',
+  'of',
+  'on',
+  'one',
+  'or',
+  'others',
+  'so',
+  'that',
+  'the',
+  'this',
+  'to',
+  'was',
+  'were',
+  'with',
+]);
+
+const quizDefinitionFragmentStarts = new Set([
+  'a',
+  'an',
+  'the',
+  'words',
+  'word',
+  'phrase',
+  'phrases',
+  'giving',
+  'using',
+  'used',
+  'repetition',
+  'opposite',
+  'human',
+  'extreme',
+  'direct',
+  'indirect',
+]);
+
+const quizDefinitionFragmentVerbs = new Set([
+  'imitate',
+  'imitates',
+  'compare',
+  'compares',
+  'comparison',
+  'giving',
+  'using',
+  'used',
+  'meaning',
+  'describe',
+  'describes',
+]);
+
+const quizQuestionSubjectBadWords = new Set([
+  'as',
+  'like',
+  'used',
+  'using',
+  'working',
+  'saving',
+  'showing',
+  'received',
+  'receiving',
+  'stores',
+  'store',
+  'outputs',
+  'inputs',
+]);
+
+const quizDirtyEndWords = new Set([
+  'as',
+  'vs',
+  'and',
+  'or',
+  'the',
+  'a',
+  'an',
+  'to',
+  'of',
+  'in',
+  'on',
+  'for',
+]);
+
+const quizTableBleedWords = new Set([
+  'input',
+  'receiving',
+  'processing',
+  'working',
+  'storage',
+  'saving',
+  'output',
+  'showing',
+  'operation',
+  'example',
+]);

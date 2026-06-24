@@ -87,12 +87,6 @@ const styles = StyleSheet.create({
 
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
-
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: -4 },
-    elevation: 8,
   },
   tab: {
     flex: 1,

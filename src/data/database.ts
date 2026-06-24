@@ -50,6 +50,16 @@ type ChunkRow = {
   source_name: string;
 };
 
+type PageRow = {
+  id: number;
+  source_id: number;
+  book_id: number;
+  page_number: number;
+  text: string;
+  created_at: string;
+  source_name: string;
+};
+
 type ChunkEmbeddingRow = {
   chunk_id: number;
   model_name: string;
@@ -114,6 +124,16 @@ export type SourceChunk = {
   pageNumber: number | null;
   text: string;
   tokenEstimate: number | null;
+  createdAt: string;
+};
+
+export type SourcePage = {
+  id: string;
+  sourceId: string;
+  bookId: string;
+  sourceName: string;
+  pageNumber: number;
+  text: string;
   createdAt: string;
 };
 
@@ -367,6 +387,18 @@ function mapChunkRow(row: ChunkRow): SourceChunk {
     pageNumber: row.page_number ?? null,
     text: row.text,
     tokenEstimate: row.token_estimate ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+function mapPageRow(row: PageRow): SourcePage {
+  return {
+    id: String(row.id),
+    sourceId: String(row.source_id),
+    bookId: String(row.book_id),
+    sourceName: row.source_name,
+    pageNumber: row.page_number,
+    text: row.text,
     createdAt: row.created_at,
   };
 }
@@ -1486,6 +1518,39 @@ export async function listSourceChunksByBook(
   );
 
   return rows.map(mapChunkRow);
+}
+
+export async function listSourcePagesByBook(
+  bookId: string,
+  limit = 24
+): Promise<SourcePage[]> {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return [];
+  }
+
+  const database = await getDatabase();
+  const rows = await database.getAllAsync<PageRow>(
+    `SELECT source_pages.id,
+            source_pages.source_id,
+            source_pages.book_id,
+            source_pages.page_number,
+            source_pages.text,
+            source_pages.created_at,
+            sources.filename AS source_name
+     FROM source_pages
+     INNER JOIN sources ON sources.id = source_pages.source_id
+     WHERE source_pages.book_id = ?
+     ORDER BY source_pages.source_id ASC, source_pages.page_number ASC
+     LIMIT ?`,
+    numericId,
+    limit
+  );
+
+  return rows.map(mapPageRow);
 }
 
 export async function searchChunksByText(

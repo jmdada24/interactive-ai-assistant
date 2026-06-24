@@ -50,7 +50,7 @@ export const styles = StyleSheet.create({
     marginTop: 4,
   },
   messageList: {
-    gap: 12,
+    gap: 14,
   },
   messageRow: {
     flexDirection: 'row',
@@ -62,11 +62,11 @@ export const styles = StyleSheet.create({
     justifyContent: 'flex-start',
   },
   messageBubble: {
-    maxWidth: '88%',
+    maxWidth: '91%',
     minWidth: 0,
     flexShrink: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 17,
+    paddingVertical: 13,
     borderRadius: 16,
     shadowColor: '#000',
     shadowOpacity: 0.06,
@@ -84,7 +84,7 @@ export const styles = StyleSheet.create({
   },
   messageText: {
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 21,
     fontWeight: '400',
     flexShrink: 1,
     flexWrap: 'wrap',
@@ -96,7 +96,7 @@ export const styles = StyleSheet.create({
     color: '#444653',
   },
   markdownBlock: {
-    gap: 6,
+    gap: 9,
     minWidth: 0,
   },
   markdownHeading: {
@@ -112,7 +112,7 @@ export const styles = StyleSheet.create({
   markdownParagraph: {
     color: '#444653',
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 21,
     fontWeight: '400',
     minWidth: 0,
     flexShrink: 1,
@@ -123,15 +123,15 @@ export const styles = StyleSheet.create({
   },
   markdownListRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 7,
     minWidth: 0,
   },
   markdownListMarker: {
-    width: 24,
+    width: 18,
     flexShrink: 0,
     color: '#0038a8',
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 21,
     fontWeight: '700',
   },
   analysisText: {

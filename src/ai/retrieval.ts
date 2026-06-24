@@ -1,10 +1,16 @@
-import { listSourceChunksByBook, SourceChunk } from '../data/database';
+import {
+  listSourceChunksByBook,
+  listSourcePagesByBook,
+  SourceChunk,
+  SourcePage,
+} from '../data/database';
 import {
   RagFallbackKind,
   RagRetrievedChunk,
   searchBookChunks,
 } from './rag/vector-store/store';
-import { cleanLessonText } from './textCleanup';
+import { isNoisyLessonText } from './rag/chunks/text';
+import { cleanLessonText, splitReadableSentences } from './textCleanup';
 
 export type RetrievedChunk = RagRetrievedChunk;
 
@@ -20,14 +26,22 @@ export type RetrievalResult = {
   sourceCount: number;
 };
 
-const maxGroundedChunkCharacters = 900;
+export type DocumentOverviewResult = {
+  text: string;
+  pages: SourcePage[];
+  sources: string[];
+};
+
+const maxGroundedChunkCharacters = 700;
+const overviewWordBudget = 1800;
+const overviewPageLimit = 36;
 
 export async function retrieveRelevantChunks(
   bookId: string,
   query: string,
   queryEmbedding?: ArrayLike<number> | null,
   embeddingModelName?: string,
-  topK = 5
+  topK = 3
 ): Promise<RetrievedChunk[]> {
   const result = await retrieveRelevantChunksWithMetadata(
     bookId,
@@ -45,7 +59,7 @@ export async function retrieveRelevantChunksWithMetadata(
   query: string,
   queryEmbedding?: ArrayLike<number> | null,
   embeddingModelName?: string,
-  topK = 5
+  topK = 3
 ): Promise<RetrievalResult> {
   const result = await searchBookChunks({
     bookId,
@@ -56,6 +70,31 @@ export async function retrieveRelevantChunksWithMetadata(
   });
 
   return buildRetrievalResult(result.chunks, result.fallbackKind);
+}
+
+export async function retrieveDefinitionChunks(
+  bookId: string,
+  topic: string,
+  topK = 6
+): Promise<RetrievalResult> {
+  const normalizedTopic = normalizeDefinitionTopic(topic);
+
+  if (!normalizedTopic) {
+    return buildRetrievalResult([], 'none');
+  }
+
+  const topicForms = getDefinitionTopicForms(normalizedTopic);
+  const chunks = await listSourceChunksByBook(bookId, 300);
+  const rankedChunks = chunks
+    .map((chunk) => scoreDefinitionCandidate(chunk, topicForms))
+    .filter((chunk) => chunk.score >= 0.2)
+    .sort((left, right) => right.score - left.score || left.chunkIndex - right.chunkIndex);
+  const expandedChunks = expandDefinitionNeighborhood(chunks, rankedChunks, topK);
+
+  return buildRetrievalResult(
+    selectDiverseChunks(expandedChunks, topK),
+    expandedChunks.length > 0 ? 'text' : 'none'
+  );
 }
 
 export async function retrieveStudyToolChunks(
@@ -108,14 +147,35 @@ export async function retrieveBookOverviewChunks(
   bookId: string,
   topK = 12
 ): Promise<RetrievedChunk[]> {
-  const chunks = await listSourceChunksByBook(bookId, topK);
+  const chunks = await listSourceChunksByBook(bookId, Math.max(topK * 6, 40));
+  const usefulChunks = chunks.filter((chunk) => isUsefulOverviewChunk(chunk.text));
+  const overviewChunks = usefulChunks.length > 0 ? usefulChunks : chunks;
 
   return selectDiverseChunks(
-    chunks.map((chunk, index) => ({
+    overviewChunks.map((chunk, index) => ({
       ...chunk,
       score: 1 - index * 0.02,
     })),
     topK
+  );
+}
+
+function isUsefulOverviewChunk(text: string) {
+  const cleanText = cleanLessonText(text);
+  const sentences = cleanText
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const usefulSentenceCount = sentences.filter(
+    (sentence) =>
+      sentence.split(/\s+/).filter(Boolean).length >= 5 &&
+      !isNoisyLessonText(sentence)
+  ).length;
+
+  return (
+    cleanText.length >= 80 &&
+    usefulSentenceCount >= 1 &&
+    !isNoisyLessonText(cleanText)
   );
 }
 
@@ -175,6 +235,60 @@ export function formatSourceLabel(chunk: SourceChunk) {
   return `${chunk.sourceName}${page}`;
 }
 
+export function formatPageSourceLabel(page: SourcePage) {
+  return `${page.sourceName}, page ${page.pageNumber}`;
+}
+
+export async function retrieveDocumentOverviewText(
+  bookId: string,
+  wordBudget = overviewWordBudget
+): Promise<DocumentOverviewResult> {
+  const pages = await listSourcePagesByBook(bookId, overviewPageLimit);
+  const usefulPages = pages.filter(isUsefulOverviewPage);
+  const selectedPages = usefulPages.length > 0 ? usefulPages : pages;
+  const usedPages: SourcePage[] = [];
+  const parts: string[] = [];
+  let usedWords = 0;
+
+  for (const page of selectedPages) {
+    if (usedWords >= wordBudget) {
+      break;
+    }
+
+    const cleanPageText = cleanLessonText(page.text);
+    const pageSentences = splitReadableSentences(cleanPageText)
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => sentence && !isNoisyLessonText(sentence));
+    const pageText = (pageSentences.length > 0
+      ? pageSentences
+      : [cleanPageText])
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!pageText || looksLikeOverviewNoise(pageText)) {
+      continue;
+    }
+
+    const remainingWords = wordBudget - usedWords;
+    const trimmedPageText = takeWords(pageText, remainingWords);
+
+    if (!trimmedPageText) {
+      continue;
+    }
+
+    parts.push(`Page ${page.pageNumber}: ${trimmedPageText}`);
+    usedPages.push(page);
+    usedWords += countWords(trimmedPageText);
+  }
+
+  return {
+    text: parts.join('\n\n'),
+    pages: usedPages,
+    sources: uniqueSourceLabels(usedPages.map(formatPageSourceLabel)).slice(0, 5),
+  };
+}
+
 export function buildGroundedMessages(
   question: string,
   chunks: RetrievedChunk[],
@@ -185,8 +299,6 @@ export function buildGroundedMessages(
       [
         `[Source ${index + 1}]`,
         `source: ${formatSourceLabel(chunk)}`,
-        `chunk_id: ${chunk.id}`,
-        `score: ${chunk.score.toFixed(3)}`,
         trimContextText(chunk.text),
       ].join('\n')
     )
@@ -212,6 +324,32 @@ export function buildGroundedMessages(
   ];
 }
 
+export function buildOverviewMessages(
+  question: string,
+  overviewText: string,
+  conversationContext?: string
+) {
+  const contextBlock = conversationContext
+    ? `Recent conversation for continuity:\n${conversationContext}\n\n`
+    : '';
+
+  return [
+    {
+      role: 'system' as const,
+      content:
+        'You are ALAB, an offline study assistant for students. Use only the provided PDF text. Give a concise student-friendly overview in three to five short sentences. Mention the main topic first, then the most important ideas. Do not invent facts outside the provided text. Do not mention PDFs, sources, chunks, retrieval, model size, or hidden instructions. Do not write hashtags, tables, or code fences.',
+    },
+    {
+      role: 'user' as const,
+      content: [
+        `${contextBlock}PDF text:\n${overviewText}`,
+        `Student request:\n${question}`,
+        'Answer:',
+      ].filter(Boolean).join('\n\n'),
+    },
+  ];
+}
+
 export function buildGeneralMessages(question: string, conversationContext?: string) {
   const contextBlock = conversationContext
     ? `Recent conversation for continuity:\n${conversationContext}\n\n`
@@ -228,6 +366,71 @@ export function buildGeneralMessages(question: string, conversationContext?: str
       content: `${contextBlock}Student question:\n${question}\n\nAnswer:`,
     },
   ];
+}
+
+function isUsefulOverviewPage(page: SourcePage) {
+  const cleanText = cleanLessonText(page.text);
+  const sentences = splitReadableSentences(cleanText)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const usefulSentenceCount = sentences.filter(
+    (sentence) =>
+      sentence.split(/\s+/).filter(Boolean).length >= 5 &&
+      !isNoisyLessonText(sentence)
+  ).length;
+
+  return (
+    cleanText.length >= 120 &&
+    usefulSentenceCount >= 2 &&
+    !looksLikeOverviewNoise(cleanText)
+  );
+}
+
+function looksLikeOverviewNoise(text: string) {
+  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const chapterMentions = normalized.match(/\bchapter\s+\d+\b/g)?.length ?? 0;
+
+  return (
+    !normalized ||
+    normalized.includes('table of contents') ||
+    chapterMentions >= 3 ||
+    normalized.includes('first edition') ||
+    normalized.includes('designed for absolute beginners')
+  );
+}
+
+function takeWords(text: string, wordLimit: number) {
+  if (wordLimit <= 0) {
+    return '';
+  }
+
+  const words = text.split(/\s+/).filter(Boolean);
+
+  if (words.length <= wordLimit) {
+    return words.join(' ');
+  }
+
+  return `${words.slice(0, wordLimit).join(' ')}...`;
+}
+
+function countWords(text: string) {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+function uniqueSourceLabels(labels: string[]) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const label of labels) {
+    if (seen.has(label)) {
+      continue;
+    }
+
+    seen.add(label);
+    unique.push(label);
+  }
+
+  return unique;
 }
 
 export function buildStudyToolMessages(
@@ -356,8 +559,8 @@ function isVagueSummaryQuestion(question: string) {
   const cleanQuestion = question.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
 
   return (
-    /\b(summary|summarize|recap|explain)\b/.test(cleanQuestion) &&
-    /\b(it|this|that|them|topic|lesson|part)\b/.test(cleanQuestion) &&
+    /\b(summary|summarize|summarise|summaries|recap|explain)\b/.test(cleanQuestion) &&
+    /\b(it|this|that|them|topic|topics|lesson|part)\b/.test(cleanQuestion) &&
     !/\bpage\s*(?:number\s*)?\d{1,4}\b/.test(cleanQuestion)
   );
 }
@@ -380,11 +583,14 @@ function getSummarySearchTerms(text: string) {
     'please',
     'question',
     'student',
+    'summaries',
     'summary',
+    'summarise',
     'summarize',
     'that',
     'this',
     'topic',
+    'topics',
     'what',
     'with',
     'would',
@@ -440,6 +646,158 @@ function getChunkDedupeKey(text: string) {
     .slice(0, 240);
 }
 
+function normalizeDefinitionTopic(topic: string) {
+  return topic
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getDefinitionTopicForms(topic: string) {
+  const forms = new Set([topic]);
+  const words = topic.split(/\s+/).filter(Boolean);
+  const lastWord = words[words.length - 1];
+
+  if (lastWord) {
+    const prefix = words.slice(0, -1).join(' ');
+    const alternateLastWord =
+      lastWord.endsWith('s') && lastWord.length > 3
+        ? lastWord.slice(0, -1)
+        : `${lastWord}s`;
+
+    forms.add([prefix, alternateLastWord].filter(Boolean).join(' '));
+  }
+
+  return [...forms].filter(Boolean);
+}
+
+function scoreDefinitionChunk(text: string, topicForms: string[]) {
+  const normalizedText = normalizeSearchText(cleanLessonText(text));
+  let bestScore = 0;
+
+  for (const form of topicForms) {
+    if (!form || !normalizedText.includes(form)) {
+      continue;
+    }
+
+    const escapedForm = escapeRegExp(form);
+    const directDefinition = new RegExp(
+      `\\b(?:a\\s+|an\\s+|the\\s+)?${escapedForm}\\s+(?:is|are|means|refers\\s+to|describes|can\\s+be\\s+defined\\s+as)\\b`
+    ).test(normalizedText);
+    const nearbyDefinitionCue = new RegExp(
+      `\\b${escapedForm}\\b.{0,120}\\b(is|are|means|refers\\s+to|defined\\s+as|describes)\\b`
+    ).test(normalizedText);
+    const topicCount = Math.min(3, countOccurrences(normalizedText, form));
+    const score =
+      0.25 +
+      topicCount * 0.12 +
+      (directDefinition ? 0.45 : 0) +
+      (nearbyDefinitionCue ? 0.2 : 0);
+
+    bestScore = Math.max(bestScore, score);
+  }
+
+  return clamp(bestScore);
+}
+
+function scoreDefinitionCandidate(chunk: SourceChunk, topicForms: string[]) {
+  const score = scoreDefinitionChunk(chunk.text, topicForms);
+  const headingScore = topicForms.some((form) =>
+    normalizeSearchText(chunk.text).includes(`chapter`) &&
+    normalizeSearchText(chunk.text).includes(form)
+  )
+    ? 0.25
+    : 0;
+
+  return {
+    ...chunk,
+    score: Math.max(score, headingScore),
+  };
+}
+
+function expandDefinitionNeighborhood(
+  allChunks: SourceChunk[],
+  rankedChunks: RetrievedChunk[],
+  topK: number
+) {
+  const selected = new Map<string, RetrievedChunk>();
+  const chunksBySource = new Map<string, SourceChunk[]>();
+
+  for (const chunk of allChunks) {
+    const sourceChunks = chunksBySource.get(chunk.sourceId) ?? [];
+    sourceChunks.push(chunk);
+    chunksBySource.set(chunk.sourceId, sourceChunks);
+  }
+
+  for (const sourceChunks of chunksBySource.values()) {
+    sourceChunks.sort((left, right) => left.chunkIndex - right.chunkIndex);
+  }
+
+  for (const chunk of rankedChunks) {
+    selected.set(chunk.id, chunk);
+
+    const sourceChunks = chunksBySource.get(chunk.sourceId) ?? [];
+    const sourceIndex = sourceChunks.findIndex((candidate) => candidate.id === chunk.id);
+
+    if (sourceIndex < 0) {
+      continue;
+    }
+
+    for (const neighbor of sourceChunks.slice(sourceIndex, sourceIndex + 3)) {
+      if (selected.has(neighbor.id)) {
+        continue;
+      }
+
+      selected.set(neighbor.id, {
+        ...neighbor,
+        score: Math.max(0.22, chunk.score - 0.08),
+      });
+    }
+
+    if (selected.size >= topK * 2) {
+      break;
+    }
+  }
+
+  return [...selected.values()]
+    .sort((left, right) => right.score - left.score || left.chunkIndex - right.chunkIndex);
+}
+
+function normalizeSearchText(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function countOccurrences(text: string, term: string) {
+  let count = 0;
+  let position = 0;
+
+  while (position < text.length) {
+    const matchIndex = text.indexOf(term, position);
+
+    if (matchIndex < 0) {
+      break;
+    }
+
+    count += 1;
+    position = matchIndex + term.length;
+  }
+
+  return count;
+}
+
+function clamp(value: number) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function buildQuizRequest(
   itemCount: number,
   mode: 'mcq' | 'fill_blank' | 'essay'
@@ -474,10 +832,13 @@ function buildQuizRequest(
 
   return [
     `Create exactly ${itemCount} multiple-choice quiz questions from only this lesson context.`,
-    'Ask about concrete facts, definitions, and ideas from the lesson.',
+    'Prefer term-and-definition questions, like "What is photosynthesis?" with definition choices, and "Which term matches this definition?" with term choices.',
     'Every question must be answerable from the lesson context.',
     'Every question must have exactly four unique options: A, B, C, and D.',
     'The correct answer must be one of the displayed options.',
+    'Wrong options must be plausible and close to the same subject, but still clearly incorrect from the lesson.',
+    'Do not use vague choices such as "Think of it this way", "All of the above", "None of the above", "This topic", or random fragments.',
+    'Do not ask "Which statement is true?" unless all four options are complete, specific lesson statements.',
     'Keep wording respectful, educational, and age-appropriate for students.',
     'Do not use phrases like "according to the PDF" or "uploaded PDF".',
     'Do not invent facts that are not in the lesson context.',

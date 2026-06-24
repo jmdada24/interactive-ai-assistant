@@ -37,6 +37,7 @@ export function ALABChat({
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [pendingVoiceStart, setPendingVoiceStart] = useState(false);
   const offlineSpeech = useOfflineSpeech();
 
   const scrollRef = useRef<ScrollView>(null);
@@ -260,8 +261,26 @@ export function ALABChat({
     setMessages((previous) => [...previous, statusMessage]);
   }, []);
 
+  const startVoiceCapture = useCallback(async () => {
+    try {
+      const didStart = await offlineSpeech.startListening();
+
+      if (!didStart) {
+        addLocalStatusMessage('Please allow microphone access so ALAB can listen to your question.');
+        setPendingVoiceStart(false);
+        return;
+      }
+
+      addLocalStatusMessage('I am listening. Tap the mic again when you are done.');
+      setPendingVoiceStart(false);
+    } catch {
+      addLocalStatusMessage('Voice input could not start. Please try again.');
+      setPendingVoiceStart(false);
+    }
+  }, [addLocalStatusMessage, offlineSpeech]);
+
   const handleVoicePress = useCallback(async () => {
-    if (isTyping || offlineSpeech.isTranscribing) {
+    if (isTyping || offlineSpeech.isTranscribing || pendingVoiceStart) {
       return;
     }
 
@@ -275,7 +294,7 @@ export function ALABChat({
         }
 
         setInput(transcript);
-        await handleSend(transcript);
+        addLocalStatusMessage('I added what I heard to the message box.');
       } catch {
         addLocalStatusMessage('Voice input could not prepare your question. Please try again.');
       }
@@ -306,28 +325,53 @@ export function ALABChat({
     }
 
     if (!offlineSpeech.isReady) {
-      offlineSpeech.prepareVoiceInput();
+      const didPrepare = offlineSpeech.prepareVoiceInput();
       const progress = Math.round(offlineSpeech.downloadProgress * 100);
+
+      if (didPrepare) {
+        setPendingVoiceStart(true);
+      }
+
       addLocalStatusMessage(
         `Voice input is getting ready${progress > 0 ? ` (${progress}%)` : ''}.`
       );
       return;
     }
 
-    try {
-      const didStart = await offlineSpeech.startListening();
-
-      if (!didStart) {
-        addLocalStatusMessage('Please allow microphone access so ALAB can listen to your question.');
-      }
-    } catch {
-      addLocalStatusMessage('Please allow microphone access so ALAB can listen to your question.');
-    }
+    await startVoiceCapture();
   }, [
     addLocalStatusMessage,
-    handleSend,
     isTyping,
     offlineSpeech,
+    pendingVoiceStart,
+    startVoiceCapture,
+  ]);
+
+  useEffect(() => {
+    if (!pendingVoiceStart || isTyping || offlineSpeech.isListening || offlineSpeech.isTranscribing) {
+      return;
+    }
+
+    if (offlineSpeech.error) {
+      setPendingVoiceStart(false);
+      addLocalStatusMessage('Voice input could not get ready. Please try again.');
+      return;
+    }
+
+    if (!offlineSpeech.isReady) {
+      return;
+    }
+
+    void startVoiceCapture();
+  }, [
+    addLocalStatusMessage,
+    isTyping,
+    offlineSpeech.error,
+    offlineSpeech.isListening,
+    offlineSpeech.isReady,
+    offlineSpeech.isTranscribing,
+    pendingVoiceStart,
+    startVoiceCapture,
   ]);
 
   useEffect(() => {
@@ -454,12 +498,13 @@ export function ALABChat({
             />
 
             <Pressable
-              disabled={isTyping || offlineSpeech.isTranscribing}
+              disabled={isTyping || offlineSpeech.isTranscribing || pendingVoiceStart}
               onPress={handleVoicePress}
               style={[
                 styles.voiceButton,
                 offlineSpeech.isListening && styles.listeningVoiceButton,
-                (isTyping || offlineSpeech.isTranscribing) && styles.disabledVoiceButton,
+                (isTyping || offlineSpeech.isTranscribing || pendingVoiceStart) &&
+                  styles.disabledVoiceButton,
               ]}
             >
               <IconMic

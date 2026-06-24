@@ -66,12 +66,16 @@ export function QuizScreen({
 
       if (parsedQuestions.length === 0) {
         resetQuizState([]);
-        setStatusText(getQuizGenerationFailureText(answer.text));
+        setStatusText(getQuizGenerationFailureText(answer.text, itemCount));
         return;
       }
 
       resetQuizState(parsedQuestions);
-      setStatusText(`Quiz ready: ${parsedQuestions.length} questions`);
+      setStatusText(
+        parsedQuestions.length === itemCount
+          ? `Quiz ready: ${parsedQuestions.length} questions`
+          : getShortQuizReadyText(parsedQuestions.length, itemCount)
+      );
     } catch {
       resetQuizState([]);
       setStatusText('Something went wrong while preparing the quiz. Please try again.');
@@ -85,18 +89,10 @@ export function QuizScreen({
       return;
     }
 
-    if (offlineAi.isAnswerHelperPrepared && !offlineAi.isModelReady) {
-      offlineAi.prepareAnswerHelper();
-      setIsWaitingForHelper(true);
-      setStatusText('Opening the study helper before generating your quiz...');
-      return;
-    }
-
     void runQuizGeneration();
   }, [
     isGenerating,
     isWaitingForHelper,
-    offlineAi,
     runQuizGeneration,
   ]);
 
@@ -453,22 +449,6 @@ export function QuizScreen({
   );
 }
 
-function getQuizGenerationFailureText(text: string) {
-  if (looksLikeRawQuizText(text)) {
-    return 'ALAB generated quiz text, but it could not be converted into selectable choices. Please generate the quiz again.';
-  }
-
-  return text || 'ALAB could not make a quiz from this lesson yet.';
-}
-
-function looksLikeRawQuizText(text: string) {
-  return (
-    /Question\s*\d*\s*[:.)-]/i.test(text) &&
-    /[A-D][.)]\s+/.test(text) &&
-    /Correct\s+answer\s*:/i.test(text)
-  );
-}
-
 function buildQuizVariationContext(
   generationIndex: number,
   previousQuestions: string[]
@@ -485,4 +465,24 @@ function buildQuizVariationContext(
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function getQuizGenerationFailureText(text: string, itemCount: number) {
+  if (looksLikeRawQuizText(text)) {
+    return `ALAB found quiz ideas, but not enough clear choices for ${itemCount} questions yet. Try a smaller set or add a longer lesson.`;
+  }
+
+  return text || `ALAB could not find enough clear quiz facts for ${itemCount} questions yet. Try a smaller set or add a longer lesson.`;
+}
+
+function getShortQuizReadyText(actualCount: number, requestedCount: number) {
+  return `Quiz ready: ${actualCount} questions. I made fewer than ${requestedCount} because this lesson only has ${actualCount} clear quiz points so far.`;
+}
+
+function looksLikeRawQuizText(text: string) {
+  return (
+    /Question\s*\d*\s*[:.)-]/i.test(text) &&
+    /[A-D][.)]\s+/.test(text) &&
+    /Correct\s+answer\s*:/i.test(text)
+  );
 }

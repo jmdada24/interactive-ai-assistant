@@ -1,10 +1,15 @@
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import * as NavigationBar from 'expo-navigation-bar';
 import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
+import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
-import { LogBox, Platform } from 'react-native';
+import {
+  AppState,
+  LogBox,
+  Platform,
+  StatusBar as NativeStatusBar,
+} from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -24,7 +29,17 @@ export default function RootLayout() {
       return;
     }
 
-    NavigationBar.setStyle('dark');
+    applyLightAndroidSystemBars();
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        applyLightAndroidSystemBars();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   return (
@@ -32,11 +47,20 @@ export default function RootLayout() {
       <KeyboardProvider>
         <SafeAreaProvider>
           <BottomSheetModalProvider>
-            <StatusBar style="dark" />
+            <ExpoStatusBar hidden={false} style="dark" />
             <Stack screenOptions={{ headerShown: false }} />
           </BottomSheetModalProvider>
         </SafeAreaProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>
   );
+}
+
+function applyLightAndroidSystemBars() {
+  NativeStatusBar.setHidden(false, 'none');
+  NativeStatusBar.setBarStyle('dark-content', false);
+  NativeStatusBar.setTranslucent(true);
+  NativeStatusBar.setBackgroundColor('transparent', false);
+  void NavigationBar.setVisibilityAsync('visible');
+  NavigationBar.setStyle('light');
 }
