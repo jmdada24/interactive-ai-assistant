@@ -3,10 +3,10 @@ import {
   splitReadableSentences,
 } from './textCleanup';
 
-const targetWordsPerChunk = 120;
-const maxWordsPerChunk = 170;
-const overlapWords = 28;
-const minimumWordsPerChunk = 25;
+const targetWordsPerChunk = 70;
+const maxWordsPerChunk = 90;
+const overlapWords = 18;
+const minimumWordsPerChunk = 20;
 
 export type ExtractedPdfPage = {
   pageNumber: number;

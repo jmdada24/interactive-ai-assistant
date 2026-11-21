@@ -149,6 +149,14 @@ android/app/build/outputs/apk/debug/app-debug.apk
 
 ## Development Checks
 
+Run the terminal-driven Qwen evaluation against `intro_to_computing.pdf`:
+
+```bash
+npm run eval:qwen
+```
+
+See `docs/QWEN_EVALUATION.md` for Android requirements, faster repeat runs, metric definitions, and report locations.
+
 Run these before building an APK or pushing changes:
 
 ```bash

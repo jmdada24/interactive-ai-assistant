@@ -13,7 +13,11 @@ type OfflineAiResponse = {
   };
 };
 
-export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
+export function useOfflineAi(
+  _bookId?: string,
+  _bookTitle?: string,
+  _options?: { deferAnswerModelLoad?: boolean }
+) {
   const answerQuestion = async (
     _question?: string,
     _conversationContext?: string
@@ -37,7 +41,7 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
   });
 
   const embedLessonText = async (): Promise<Float32Array | null> => null;
-  const prepareAnswerHelper = () => {};
+  const prepareAnswerHelper = async () => false;
   const stopActiveGeneration = async () => true;
   const hasActiveGeneration = () => false;
 
@@ -49,6 +53,7 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
     hasActiveGeneration,
     embedLessonText,
     embeddingModelName: 'distiluse-base-multilingual-cased-v2-8da4w-chunk100-noprefix-v2',
+    modelProfile: 'qwen2.5-3b-quantized+distiluse-base-multilingual-cased-v2-8da4w',
     isAvailable: false,
     hasCheckedDownload: true,
     isAnswerHelperPrepared: false,
