@@ -54,6 +54,7 @@
     "android": "bash ./scripts/run-android.sh",
     "apk:debug": "bash ./scripts/build-android-debug-apk.sh",
     "apk:release": "bash ./scripts/build-android-release-apk.sh",
+    "eval:qwen": "bash ./scripts/evaluate-qwen.sh",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint"

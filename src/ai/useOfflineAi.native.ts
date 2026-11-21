@@ -111,7 +111,13 @@ const generationConfig = {
   outputTokenBatchSize: 4,
   batchTimeInterval: 80,
 };
-export function useOfflineAi(bookId: string, bookTitle: string) {
+export function useOfflineAi(
+  bookId: string,
+  bookTitle: string,
+  options?: { deferAnswerModelLoad?: boolean }
+) {
+  // Keep model loading on demand unless a caller explicitly requests preloading.
+  const deferAnswerModelLoad = options?.deferAnswerModelLoad ?? true;
   const [hasSearchHelperPrepared, setHasSearchHelperPrepared] = useState(false);
   const [hasAnswerHelperPrepared, setHasAnswerHelperPrepared] = useState(false);
   const [shouldLoadLlm, setShouldLoadLlm] = useState(false);
@@ -169,6 +175,10 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
         if (isActive && hasFullStudyHelper) {
           setHasAnswerHelperPrepared(true);
+
+          if (!deferAnswerModelLoad) {
+            setShouldLoadLlm(true);
+          }
         }
       })
       .finally(() => {
@@ -180,7 +190,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     return () => {
       isActive = false;
     };
-  }, []);
+  }, [deferAnswerModelLoad]);
 
   const waitForAnswerHelperReady = useCallback(async () => {
     if (!hasAnswerHelperPrepared) {
@@ -972,11 +982,10 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     ]
   );
 
-  const prepareAnswerHelper = useCallback(() => {
-    if (hasAnswerHelperPrepared && !shouldLoadLlm) {
-      setShouldLoadLlm(true);
-    }
-  }, [hasAnswerHelperPrepared, shouldLoadLlm]);
+  const prepareAnswerHelper = useCallback(
+    async () => waitForAnswerHelperReady(),
+    [waitForAnswerHelperReady]
+  );
 
   const hasActiveGeneration = useCallback(
     () => Boolean(activeGenerationPromiseRef.current || llmGeneratingRef.current),
@@ -1008,7 +1017,8 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       try {
         return await embeddings.forward(formatEmbeddingInput(text, 'passage'));
-      } catch {
+      } catch (error) {
+        console.warn('ALAB lesson embedding failed:', error);
         return null;
       }
     },
@@ -1023,6 +1033,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     hasActiveGeneration,
     embedLessonText,
     embeddingModelName,
+    modelProfile: offlineModelProfile,
     isAvailable,
     hasCheckedDownload,
     isAnswerHelperPrepared: hasAnswerHelperPrepared,

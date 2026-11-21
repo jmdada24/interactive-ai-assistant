@@ -7,8 +7,10 @@ export function useOfflineStudyHelperStatus() {
     isLoading: false,
     progress: 0,
     error: null,
+    statusMessage: 'The study helper is unavailable in this preview.',
+    failureDetail: null,
     recoveryMessage: null,
     deviceWarning: null,
-    startDownload: () => {},
+    startDownload: async () => false,
   };
 }
